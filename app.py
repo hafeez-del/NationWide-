@@ -73,16 +73,16 @@ DEFAULT_PRIORITIES = ["Urgent - order", "Order"]
 # ─────────────────────────── UI ───────────────────────────────
 
 st.title("📦 Nation Wide Wholesale - Automation")
-st.caption("Apni files upload karo, settings set karo, Run dabao — output download karo!")
+st.caption("Just upload your files,add the setting, press Run  — download the output!")
 
 tab1, tab2 = st.tabs(["📊 Demand Forecast", "📋 PO Generator"])
 
 # ═══════════════════════ TAB 1: DEMAND FORECAST ═══════════════════════
 with tab1:
     st.header("Demand Forecast")
-    st.markdown("Inventory, purchases, sales aur price book upload karo — script automatically forecast bana degi.")
+    st.markdown("Do Upload Inventory, purchases, sales and price book— script automatically makes the forecast.")
 
-    st.subheader("📁 Files Upload Karo")
+    st.subheader("📁 Upload files")
     col_left, col_right = st.columns(2)
     with col_left:
         st.markdown("**Required Files:**")
