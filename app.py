@@ -250,30 +250,26 @@ try:
                         st.code(log_text, language="text")
 
                     st.subheader("⬇️ Download Output Files")
-                    dc1, dc2 = st.columns(2)
 
                     output_path = paths["output"]
                     ordering_path = paths["output_ordering"]
 
-                    if os.path.isfile(output_path):
-                        with open(output_path, "rb") as f:
-                            dc1.download_button(
-                                "📥 Monthly Sales Workbook",
-                                data=f.read(),
-                                file_name="Warehouse_Monthly_Sales.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                type="primary",
-                            )
+                    # Bundle all output files into one ZIP so a single download gets everything
+                    zip_buf = io.BytesIO()
+                    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                        if os.path.isfile(output_path):
+                            zf.write(output_path, "Warehouse_Monthly_Sales.xlsx")
+                        if os.path.isfile(ordering_path):
+                            zf.write(ordering_path, "Warehouse_Ordering_Sheet.xlsx")
+                    zip_buf.seek(0)
 
-                    if os.path.isfile(ordering_path):
-                        with open(ordering_path, "rb") as f:
-                            dc2.download_button(
-                                "📥 Ordering Sheet Workbook",
-                                data=f.read(),
-                                file_name="Warehouse_Ordering_Sheet.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                type="primary",
-                            )
+                    st.download_button(
+                        "📥 Download All Output Files (ZIP)",
+                        data=zip_buf.getvalue(),
+                        file_name="Demand_Forecast_Output.zip",
+                        mime="application/zip",
+                        type="primary",
+                    )
 
                 except Exception as e:
                     print(f"APP: ERROR in demand forecast: {e}", flush=True)
