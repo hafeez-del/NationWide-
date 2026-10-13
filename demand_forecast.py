@@ -1,4 +1,3 @@
-
 import argparse
 import math
 import re
@@ -250,11 +249,17 @@ def find_source(workbook, kind):
                 "sales": ("transactiontype", "quantity", "salesprice")}[kind]
     name = SHEET_NAMES[kind]
     sheets = [workbook[name]] if name else workbook.worksheets
+    print(f"  [find_source] kind={kind}, required={required}, checking {len(sheets)} sheet(s)", flush=True)
     for sheet in sheets:
+        print(f"  [find_source] sheet='{sheet.title}'", flush=True)
         # Do not rely on max_row, which can be missing in some QB exports.
         for row_number, row in enumerate(sheet.iter_rows(min_row=1, max_row=20), 1):
+            raw_values = [c.value for c in row if c.value is not None]
             columns = {header_key(c.value): c.column for c in row if c.value is not None}
+            if row_number <= 8:
+                print(f"  [find_source]   row {row_number}: raw={raw_values[:6]}, keys={list(columns.keys())[:6]}", flush=True)
             if all(key in columns for key in required):
+                print(f"  [find_source]   MATCH at row {row_number}!", flush=True)
                 return sheet, row_number, columns
     raise ValueError(f"Could not find the {kind} headers. Check file/sheet selection.")
 
