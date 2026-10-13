@@ -182,6 +182,28 @@ try:
                         "history": os.path.join(tmp, "history.json"),
                     }
 
+                    # Verify saved files before processing
+                    for label, fpath in paths.items():
+                        if fpath and os.path.isfile(fpath):
+                            sz = os.path.getsize(fpath)
+                            print(f"APP: saved {label} -> {fpath} ({sz:,} bytes)", flush=True)
+                        elif fpath:
+                            print(f"APP: WARNING {label} -> {fpath} NOT FOUND", flush=True)
+
+                    # Quick header check on the sales file
+                    try:
+                        import openpyxl as _oxl
+                        _wb = _oxl.load_workbook(paths["sales"], read_only=True, data_only=True)
+                        print(f"APP: sales file sheets: {_wb.sheetnames}", flush=True)
+                        for _ws in _wb.worksheets:
+                            for _rn, _row in enumerate(_ws.iter_rows(min_row=1, max_row=8), 1):
+                                _vals = [c.value for c in _row if c.value is not None]
+                                if _vals:
+                                    print(f"APP: sales sheet '{_ws.title}' row {_rn}: {_vals[:6]}", flush=True)
+                        _wb.close()
+                    except Exception as _e:
+                        print(f"APP: sales file check error: {_e}", flush=True)
+
                     print("APP: files saved, importing demand_forecast...", flush=True)
 
                     if "demand_forecast" in sys.modules:
@@ -200,8 +222,24 @@ try:
                     df.ORDERING_PRIORITIES = list(selected_priorities)
 
                     log_buf = io.StringIO()
+
+                    # Tee class: writes to both the buffer AND stderr (which goes to server logs)
+                    class TeeWriter:
+                        def __init__(self, buf, original):
+                            self.buf = buf
+                            self.original = original
+                        def write(self, s):
+                            self.buf.write(s)
+                            self.original.write(s)
+                            return len(s)
+                        def flush(self):
+                            self.buf.flush()
+                            self.original.flush()
+
+                    tee_out = TeeWriter(log_buf, sys.__stderr__)
+
                     print("APP: running df.run(paths)...", flush=True)
-                    with redirect_stdout(log_buf), redirect_stderr(log_buf):
+                    with redirect_stdout(tee_out), redirect_stderr(tee_out):
                         df.run(paths)
 
                     log_text = log_buf.getvalue()
