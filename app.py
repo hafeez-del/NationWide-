@@ -255,12 +255,15 @@ try:
                     ordering_path = paths["output_ordering"]
 
                     # Bundle all output files into one ZIP so a single download gets everything
+                    detail_path = paths.get("output_detail", "")
                     zip_buf = io.BytesIO()
                     with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
                         if os.path.isfile(output_path):
                             zf.write(output_path, "Warehouse_Monthly_Sales.xlsx")
                         if os.path.isfile(ordering_path):
                             zf.write(ordering_path, "Warehouse_Ordering_Sheet.xlsx")
+                        if detail_path and os.path.isfile(detail_path):
+                            zf.write(detail_path, "Warehouse_Monthly_Sales_Detail_Sheets.xlsx")
                     zip_buf.seek(0)
 
                     st.download_button(
