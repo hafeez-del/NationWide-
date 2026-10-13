@@ -2119,12 +2119,43 @@ def run(paths):
             raise ValueError("Ordering workbook path must differ from the main output and the inputs.")
         print("\nBuilding ordering workbook...", flush=True)
         build_ordering_workbook(target["final sheet"], planning_cache, ordering_path)
+    # Free large data structures before saving to reduce peak memory during XML serialization.
+    del sales_clean_rows, purchase_clean_rows, inventory_clean_rows
+    del active_rows, summarized, audit_rows, proper_inventory, mapped
+    del sales_active_checks, purchase_checks, purchase_active_checks
+    del sales_summary_checks
+    try:
+        del store_values, planning_cache, costs
+    except NameError:
+        pass
+    gc.collect()
     output.parent.mkdir(parents=True, exist_ok=True)
-    # Save atomically so a failed save does not leave a half-written deliverable.
+    # Stream the two largest sheets (sales clean, stores sales clean) directly into a
+    # separate write-only workbook.  write_only=True never holds old rows in memory, so
+    # peak usage stays flat regardless of sheet size.  After streaming, the sheets are
+    # removed from the main workbook so its save is also lightweight.
+    large_sheet_names = [n for n in target.sheetnames if n in ("sales clean", "stores sales clean")]
+    detail_path = output.with_name(output.stem + "_Detail_Sheets.xlsx")
+    if large_sheet_names:
+        print(f"\nStreaming {len(large_sheet_names)} large sheet(s) to detail file...", flush=True)
+        wb_detail = Workbook(write_only=True)
+        for sheet_name in large_sheet_names:
+            ws_src = target[sheet_name]
+            ws_dst = wb_detail.create_sheet(sheet_name)
+            for row in ws_src.iter_rows(values_only=True):
+                ws_dst.append(list(row))
+            del target[sheet_name]
+            print(f"  '{sheet_name}' streamed OK", flush=True)
+        gc.collect()
+        wb_detail.save(str(detail_path))
+        wb_detail.close()
+        del wb_detail
+        gc.collect()
+        paths["output_detail"] = str(detail_path)
+        print(f"  Detail sheets saved: {detail_path}", flush=True)
+    # Save the main workbook (now without the largest sheets).
     temporary = output.with_name(output.stem + ".tmp.xlsx")
     print(f"\nSaving: {output}", flush=True)
-    # Formulas are saved WITHOUT patching the XML afterwards (that patching made Excel ask to repair the
-    # file and doubled the save time). Excel calculates every formula when the file is opened.
     target.calculation.fullCalcOnLoad = True
     target.save(temporary)
     temporary.replace(output)
