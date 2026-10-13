@@ -1,6 +1,6 @@
 """
 Nation Wide Wholesale - Automation Tool
-Two tabs: Demand Forecast + PO Generator
+Three tabs: Demand Forecast + PO Generator + PDI Sales Sorter
 """
 import streamlit as st
 import tempfile
@@ -31,6 +31,20 @@ def save_upload(uploaded_file, directory, name=None):
     with open(path, "wb") as f:
         f.write(uploaded_file.getbuffer())
     return path
+
+
+class TeeWriter:
+    """Write to both a buffer AND stderr (which goes to Streamlit Cloud server logs)."""
+    def __init__(self, buf, original):
+        self.buf = buf
+        self.original = original
+    def write(self, s):
+        self.buf.write(s)
+        self.original.write(s)
+        return len(s)
+    def flush(self):
+        self.buf.flush()
+        self.original.flush()
 
 
 def zip_folder(folder_path):
@@ -83,7 +97,7 @@ try:
     st.caption("Just upload your files, add the setting, press Run — download the output!")
     print("APP: title done", flush=True)
 
-    tab1, tab2 = st.tabs(["📊 Demand Forecast", "📋 PO Generator"])
+    tab1, tab2, tab3 = st.tabs(["📊 Demand Forecast", "📋 PO Generator", "🏪 PDI Sales Sorter"])
     print("APP: tabs created", flush=True)
 
     # ═══════════════════════ TAB 1: DEMAND FORECAST ═══════════════════════
@@ -222,20 +236,6 @@ try:
                     df.ORDERING_PRIORITIES = list(selected_priorities)
 
                     log_buf = io.StringIO()
-
-                    # Tee class: writes to both the buffer AND stderr (which goes to server logs)
-                    class TeeWriter:
-                        def __init__(self, buf, original):
-                            self.buf = buf
-                            self.original = original
-                        def write(self, s):
-                            self.buf.write(s)
-                            self.original.write(s)
-                            return len(s)
-                        def flush(self):
-                            self.buf.flush()
-                            self.original.flush()
-
                     tee_out = TeeWriter(log_buf, sys.__stderr__)
 
                     print("APP: running df.run(paths)...", flush=True)
@@ -391,6 +391,135 @@ try:
                     shutil.rmtree(tmp, ignore_errors=True)
 
     print("APP: tab2 complete", flush=True)
+
+    # ═══════════════════════ TAB 3: PDI SALES SORTER ═══════════════════════
+    with tab3:
+        st.header("PDI Sales Sorter")
+        st.markdown(
+            "Upload one or more PDI store sales files (.xlsx). "
+            "The script filters rows by department keyword, groups by description, "
+            "and produces a summary workbook with one sheet per file."
+        )
+
+        st.subheader("📁 Upload PDI Sales Files")
+        pdi_uploads = st.file_uploader(
+            "PDI Sales Files (upload any number of .xlsx files)",
+            type=["xlsx"],
+            accept_multiple_files=True,
+            key="pdi_files",
+        )
+
+        st.subheader("⚙️ Settings")
+        dept_keyword = st.text_input(
+            "Department Keyword (case-insensitive filter)",
+            value="novelty",
+            key="pdi_dept",
+        )
+        save_detail = st.checkbox(
+            "Also generate per-file detail workbooks (Merged + Filtered sheets)",
+            value=False,
+            key="pdi_detail",
+        )
+
+        if not pdi_uploads:
+            st.info("Upload at least one PDI sales file to activate the Run button.")
+
+        if st.button("▶️  Sort PDI Sales", type="primary", disabled=not pdi_uploads, key="pdi_run"):
+            if not dept_keyword.strip():
+                st.error("Enter a department keyword to filter by.")
+                st.stop()
+
+            with st.spinner("Processing PDI sales files..."):
+                tmp = tempfile.mkdtemp(prefix="nw_pdi_")
+                try:
+                    # Save uploaded files and build input_files dict (label → path)
+                    input_map = {}
+                    for uploaded in pdi_uploads:
+                        label = Path(uploaded.name).stem
+                        # Handle duplicate filenames
+                        base_label = label
+                        counter = 2
+                        while label in input_map:
+                            label = f"{base_label}_{counter}"
+                            counter += 1
+                        fpath = save_upload(uploaded, tmp, f"{label}.xlsx")
+                        input_map[label] = fpath
+
+                    st.write(f"**Files:** {', '.join(input_map.keys())}")
+
+                    if "pdi_sales_sorter" in sys.modules:
+                        del sys.modules["pdi_sales_sorter"]
+                    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+                    import pdi_sales_sorter as pdi
+
+                    output_dir = os.path.join(tmp, "pdi_output")
+                    log_buf = io.StringIO()
+                    tee_out = TeeWriter(log_buf, sys.__stderr__)
+
+                    print("APP: running pdi_sales_sorter.run()...", flush=True)
+                    with redirect_stdout(tee_out), redirect_stderr(tee_out):
+                        result = pdi.run(
+                            input_files=input_map,
+                            output_dir=output_dir,
+                            department_contains=dept_keyword.strip(),
+                            save_detail=save_detail,
+                        )
+
+                    log_text = log_buf.getvalue()
+                    print("APP: pdi_sales_sorter.run() completed!", flush=True)
+                    st.success(f"✅ PDI Sales Sorter complete — {len(input_map)} file(s) processed!")
+
+                    with st.expander("📋 Processing Log", expanded=False):
+                        st.code(log_text, language="text")
+
+                    # Per-file reports
+                    if result.get("reports"):
+                        with st.expander("📊 Per-File Reports"):
+                            for report in result["reports"]:
+                                st.text(report)
+
+                    st.subheader("⬇️ Download Output")
+
+                    # Summary workbook always available
+                    summary_path = result.get("summary", "")
+                    if summary_path and os.path.isfile(summary_path):
+                        with open(summary_path, "rb") as f:
+                            st.download_button(
+                                "📥 Download Summary Workbook",
+                                data=f.read(),
+                                file_name="Stores_Sales_Summary.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                type="primary",
+                            )
+
+                    # If detail files exist, bundle everything into a ZIP
+                    detail_files = result.get("details", [])
+                    if detail_files:
+                        zip_buf = io.BytesIO()
+                        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                            if summary_path and os.path.isfile(summary_path):
+                                zf.write(summary_path, "Stores_Sales_Summary.xlsx")
+                            for dp in detail_files:
+                                if os.path.isfile(dp):
+                                    zf.write(dp, os.path.basename(dp))
+                        zip_buf.seek(0)
+                        st.download_button(
+                            "📥 Download All Files (ZIP)",
+                            data=zip_buf.getvalue(),
+                            file_name="PDI_Sales_Sorted.zip",
+                            mime="application/zip",
+                        )
+
+                except Exception as e:
+                    print(f"APP: ERROR in PDI sales sorter: {e}", flush=True)
+                    print(traceback.format_exc(), flush=True)
+                    st.error(f"❌ Error: {e}")
+                    with st.expander("Full Error Details"):
+                        st.code(traceback.format_exc(), language="text")
+                finally:
+                    shutil.rmtree(tmp, ignore_errors=True)
+
+    print("APP: tab3 complete", flush=True)
 
     # ─────── Footer ───────
     st.divider()
