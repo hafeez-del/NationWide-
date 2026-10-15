@@ -1,4 +1,5 @@
 import argparse
+import gc
 import math
 import re
 import sys
@@ -871,13 +872,14 @@ def month_sequence(start, end):
     return result
 
 
-def sales_coverage_months(sheet, sales_rows, history):
+def sales_coverage_months(sheet_or_label, sales_rows, history):
     covered = set()
     start, end = SALES_BASE_COVERAGE
     if start and end:
         covered.update(month_sequence(date.fromisoformat(start), date.fromisoformat(end)))
     else:
-        label = trim(sheet.cell(3, 1).value)
+        # Accept either a worksheet or a pre-read label string (memory-saving mode).
+        label = sheet_or_label if isinstance(sheet_or_label, str) else trim(sheet_or_label.cell(3, 1).value)
         match = re.fullmatch(r"([A-Za-z]+)\s*-\s*([A-Za-z]+),?\s+(\d{4})", label)
         if match:
             first = datetime.strptime(match[1], "%B").month
@@ -1001,11 +1003,12 @@ def read_store_sales(path, target, raw_prefix, default_year):
             else:
                 named_month = None
             included.append(sheet.title)
-            name = raw_prefix if len(included) == 1 else raw_prefix[:27] + f" {len(included)}"
-            raw = target.create_sheet(name[:31])
-            # Preserve source values, including optional Retail, without importing formatting.
-            for original in sheet.iter_rows(values_only=True):
-                raw.append(original)
+            if INCLUDE_RAW_TABS:
+                name = raw_prefix if len(included) == 1 else raw_prefix[:27] + f" {len(included)}"
+                raw = target.create_sheet(name[:31])
+                # Preserve source values, including optional Retail, without importing formatting.
+                for original in sheet.iter_rows(values_only=True):
+                    raw.append(original)
             for rowno, row in enumerate(sheet.iter_rows(min_row=rn+1, values_only=True), rn+1):
                 def cell(index):
                     return row[index] if index is not None and index < len(row) else None
@@ -2066,9 +2069,12 @@ def run(paths):
         cached = load_workbook(source_paths[kind], data_only=True, read_only=True)
         try:
             sheet, header_row, cols = find_source(cached, kind)
-            raw = target.create_sheet(kind + " raw")
-            print(f"  Preserving original sheet: {sheet.title}", flush=True)
-            copy_raw(source[sheet.title], raw)
+            if INCLUDE_RAW_TABS:
+                raw = target.create_sheet(kind + " raw")
+                print(f"  Preserving original sheet: {sheet.title}", flush=True)
+                copy_raw(source[sheet.title], raw)
+            else:
+                raw = None
             clean = target.create_sheet(kind + " clean")
             stats = Counter()
             headers, rows = (inventory_rows(sheet, header_row, cols, stats) if kind == "inventory"
@@ -2086,7 +2092,8 @@ def run(paths):
                         a_sheet, a_header, a_cols = find_source(append_cached, kind)
                         append_headers, append_rows = transaction_rows(a_sheet, a_header, a_cols, kind, Counter())
                         coverage = append_date_range(a_sheet, kind, a_cols, append_rows)
-                        copy_raw(append_source[a_sheet.title], target.create_sheet(kind + " append raw"))
+                        if INCLUDE_RAW_TABS:
+                            copy_raw(append_source[a_sheet.title], target.create_sheet(kind + " append raw"))
                         print(f"  Append replaces dates {coverage[0]} through {coverage[1]} ({len(append_rows):,} qualifying rows)", flush=True)
                     finally:
                         append_source.close()
@@ -2097,8 +2104,12 @@ def run(paths):
                 purchase_clean_rows = rows
             if kind == "sales":
                 sales_clean_rows = rows
-                # This copied worksheet survives closing the source workbook.
-                sales_base_sheet = raw
+                if INCLUDE_RAW_TABS:
+                    # This copied worksheet survives closing the source workbook.
+                    sales_base_sheet = raw
+                else:
+                    # Save just the coverage label text instead of the entire raw sheet.
+                    sales_base_sheet = trim(source[sheet.title].cell(3, 1).value)
             if kind == "inventory":
                 inventory_clean_rows = rows
                 # Store real Excel PROPER formulas; cached results added on save.
@@ -2115,6 +2126,7 @@ def run(paths):
         finally:
             source.close()
             cached.close()
+            gc.collect()
     proper_inventory = [[r[0], r[1], proper(r[2]), r[3]] for r in inventory_clean_rows]
     print("\nMapping inventory to Master Price Book...", flush=True)
     mapped, lookup_counts = lookup_inventory(proper_inventory, indexes)
@@ -2182,6 +2194,8 @@ def run(paths):
     sales_summary_checks, _ = reverse_purchase_check(summarized, sales_items, indexes)
     sales_active_checks, _ = reverse_purchase_check(active_rows, sales_items, indexes)
     add_lookup_columns(target["sales clean"], sales_summary_checks, sales_active_checks)
+    del sales_items
+    gc.collect()
     as_of = date.fromisoformat(AS_OF_DATE) if AS_OF_DATE else datetime.now(timezone(timedelta(hours=5))).date()
     covered_months = sales_coverage_months(sales_base_sheet, sales_clean_rows, history)
     sales_headers, monthly_rows, sales_audit = monthly_sales_rows(active_rows, sales_clean_rows, sales_active_checks, covered_months, as_of)
@@ -2228,6 +2242,32 @@ def run(paths):
         print("\nBuilding ordering workbook...", flush=True)
         build_ordering_workbook(target["final sheet"], planning_cache, ordering_path)
     output.parent.mkdir(parents=True, exist_ok=True)
+    # Free large data structures before saving (the ordering workbook above no longer needs them).
+    del sales_clean_rows, purchase_clean_rows, inventory_clean_rows
+    del active_rows, summarized, audit_rows, proper_inventory, mapped
+    del sales_active_checks, purchase_checks, purchase_active_checks, sales_summary_checks
+    gc.collect()
+    # Stream the two largest sheets (sales clean, stores sales clean) into a separate write-only
+    # workbook so peak memory stays flat, then drop them from the main workbook.
+    large_sheet_names = [n for n in target.sheetnames if n in ("sales clean", "stores sales clean")]
+    detail_path = output.with_name(output.stem + "_Detail_Sheets.xlsx")
+    if large_sheet_names:
+        print(f"\nStreaming {len(large_sheet_names)} large sheet(s) to detail file...", flush=True)
+        wb_detail = Workbook(write_only=True)
+        for sheet_name in large_sheet_names:
+            ws_src = target[sheet_name]
+            ws_dst = wb_detail.create_sheet(sheet_name)
+            for row in ws_src.iter_rows(values_only=True):
+                ws_dst.append(list(row))
+            del target[sheet_name]
+            print(f"  '{sheet_name}' streamed OK", flush=True)
+        gc.collect()
+        wb_detail.save(str(detail_path))
+        wb_detail.close()
+        del wb_detail
+        gc.collect()
+        paths["output_detail"] = str(detail_path)
+        print(f"  Detail sheets saved: {detail_path}", flush=True)
     # Save atomically so a failed save does not leave a half-written deliverable.
     temporary = output.with_name(output.stem + ".tmp.xlsx")
     print(f"\nSaving: {output}", flush=True)
