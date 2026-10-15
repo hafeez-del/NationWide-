@@ -29,11 +29,12 @@ CONFIG = {
 "purchase_append": r"E:\Downloads\Automate\nationwise\crrnt purchase warehouse.xlsx",
 "sales_append": r"E:\Downloads\Automate\nationwise\crrnt sales warehouse.xlsx",
 "stores_sales": r"E:\Downloads\Automate\nationwise\6 months pdi sales.xlsx",
+"stores_sales_append": r"E:\Downloads\Automate\nationwise\Stores_Sales_April_September.xlsx",  # blank "" = skip
 "open_po": r"E:\Downloads\Automate\nationwise\open PO's.xlsx",
 "planning_inputs": "",
 "history": "",
-"output": r"E:\Downloads\Automate\Warehouse_Monthly_Sales_new_J.xlsx",
-"output_ordering": r"E:\Downloads\Automate\Warehouse_Ordering_Sheet_J.xlsx"
+"output": r"E:\Downloads\Automate\Warehouse_Monthly_Sales_new_P.xlsx",
+"output_ordering": r"E:\Downloads\Automate\Warehouse_Ordering_Sheet_P.xlsx"
 }
 
 STORES_BASE_YEAR = 2026  # Year for month-only PDI rows (change for a new base year)
@@ -54,11 +55,11 @@ SORT_CLEAN_SHEETS = True
 # False = do NOT write the copies of the original exports ("... raw", "current ...") into the output.
 # They are only used while the script runs; skipping them makes saving much faster and the file far smaller
 # (the 245k-row sales raw tab alone is ~2.4 million cells). Your original files are untouched either way.
-INCLUDE_RAW_TABS = False
+INCLUDE_RAW_TABS = True
 # ---------------- ORDERING SHEET (tab 2 of the second workbook) ----------------
 # Add, delete or reorder columns here. Every name must be a column header of 'final sheet'
 # (Department, Brand, box upc, master upc, description, Pack of, QTY, Negative QTY flag, PB description,
-#  WH last 30 days, Daily demand, Days cover, Stock at arrival, Incoming QTY, Suggested order QTY, Priority,
+#  WH last 30 days, Three month avg/day (Daily demand), Days cover, Stock at arrival, Incoming QTY, Suggested order QTY, Priority,
 #  ABC class, Item class, Planning notes ... any header of the final sheet).
 # Use ("final sheet header", "Heading to show") to rename a column in the ordering sheet.
 # Two extra columns are built into the ordering sheet and are not taken from the final sheet:
@@ -72,6 +73,13 @@ ORDERING_BORDERS = True            # thin borders around every cell of the order
 ORDERING_ONLY_ORDER_ROWS = True    # True = the ordering sheet lists only the SKUs whose Priority is in ORDERING_PRIORITIES
 ORDERING_PRIORITIES = ["Urgent - order", "Order"]   # add "Urgent - expedite incoming" etc. if you want them listed too
 ORDERING_SHEET_NAME = "ordering sheet"
+# ---------------- OPEN PO ALERTS (tab "open PO alerts" in the main output) ----------------
+# Put the PO date in a column of the Open PO sheet (header: PO date / Date / Order date). A line whose PO date is
+# OPEN_PO_ALERT_DAYS or more days before today (blank/None = the lead time of DEMAND) and that is still in the sheet
+# is an ALERT. Delete a line from the sheet when its stock arrives. Lines without a date are listed as DATE MISSING.
+OPEN_PO_ALERTS = True
+OPEN_PO_SHEET_NAME = "open PO alerts"
+OPEN_PO_ALERT_DAYS = None
 FINAL_SALES_COLUMN_WIDTH = 18  # Fixed width for every WH/stores month column
 # Fixed leading columns of "final sheet": Status, Department, Brand, box upc, master upc,
 # description, Pack of, QTY, PB description. Month columns start right after them.
@@ -80,6 +88,7 @@ FINAL_BASE_HEADERS = ["Status", "Department", "Brand", "box upc", "master upc", 
 BASE_COLS = len(FINAL_BASE_HEADERS)
 DESC_COL = FINAL_BASE_HEADERS.index("description") + 1
 QTY_COL_LETTER = "H"  # QTY column of FINAL_BASE_HEADERS
+BASE_COLS_QTY = FINAL_BASE_HEADERS.index("QTY") + 1
 # Additional verified suffixes can be added here, e.g. "OLD UPC".
 # Unknown trailing words are NOT automatically removed: they may be flavor/model.
 EXTRA_DESCRIPTION_SUFFIXES = []
@@ -249,17 +258,11 @@ def find_source(workbook, kind):
                 "sales": ("transactiontype", "quantity", "salesprice")}[kind]
     name = SHEET_NAMES[kind]
     sheets = [workbook[name]] if name else workbook.worksheets
-    print(f"  [find_source] kind={kind}, required={required}, checking {len(sheets)} sheet(s)", flush=True)
     for sheet in sheets:
-        print(f"  [find_source] sheet='{sheet.title}'", flush=True)
         # Do not rely on max_row, which can be missing in some QB exports.
         for row_number, row in enumerate(sheet.iter_rows(min_row=1, max_row=20), 1):
-            raw_values = [c.value for c in row if c.value is not None]
             columns = {header_key(c.value): c.column for c in row if c.value is not None}
-            if row_number <= 8:
-                print(f"  [find_source]   row {row_number}: raw={raw_values[:6]}, keys={list(columns.keys())[:6]}", flush=True)
             if all(key in columns for key in required):
-                print(f"  [find_source]   MATCH at row {row_number}!", flush=True)
                 return sheet, row_number, columns
     raise ValueError(f"Could not find the {kind} headers. Check file/sheet selection.")
 
@@ -868,14 +871,13 @@ def month_sequence(start, end):
     return result
 
 
-def sales_coverage_months(sheet_or_label, sales_rows, history):
+def sales_coverage_months(sheet, sales_rows, history):
     covered = set()
     start, end = SALES_BASE_COVERAGE
     if start and end:
         covered.update(month_sequence(date.fromisoformat(start), date.fromisoformat(end)))
     else:
-        # Accept either a worksheet or a pre-read label string (memory-saving mode).
-        label = sheet_or_label if isinstance(sheet_or_label, str) else trim(sheet_or_label.cell(3, 1).value)
+        label = trim(sheet.cell(3, 1).value)
         match = re.fullmatch(r"([A-Za-z]+)\s*-\s*([A-Za-z]+),?\s+(\d{4})", label)
         if match:
             first = datetime.strptime(match[1], "%B").month
@@ -999,12 +1001,11 @@ def read_store_sales(path, target, raw_prefix, default_year):
             else:
                 named_month = None
             included.append(sheet.title)
-            if INCLUDE_RAW_TABS:
-                name = raw_prefix if len(included) == 1 else raw_prefix[:27] + f" {len(included)}"
-                raw = target.create_sheet(name[:31])
-                # Preserve source values, including optional Retail, without importing formatting.
-                for original in sheet.iter_rows(values_only=True):
-                    raw.append(original)
+            name = raw_prefix if len(included) == 1 else raw_prefix[:27] + f" {len(included)}"
+            raw = target.create_sheet(name[:31])
+            # Preserve source values, including optional Retail, without importing formatting.
+            for original in sheet.iter_rows(values_only=True):
+                raw.append(original)
             for rowno, row in enumerate(sheet.iter_rows(min_row=rn+1, values_only=True), rn+1):
                 def cell(index):
                     return row[index] if index is not None and index < len(row) else None
@@ -1428,6 +1429,103 @@ def build_ordering_workbook(final, planning_cache, path):
     print(f"  Ordering workbook: {path}  (tab 1 '{final.title}', tab 2 '{ORDERING_SHEET_NAME}' with {len(rows):,} rows x {len(specs)} columns)", flush=True)
 
 
+def late_open_pos(po_rows, tab, as_of, alert_days):
+    """{description_key of the matched SKU: oldest days open} for open PO lines dated alert_days or more days ago."""
+    late = {}
+    for r, row in zip(po_rows, tab):
+        if str(row[9]).startswith("Counted") and r.get("date") and (as_of - r["date"]).days >= alert_days:
+            key = description_key(row[7])
+            late[key] = max(late.get(key, 0), (as_of - r["date"]).days)
+    return late
+
+
+def build_open_po_alerts(target, final, planning_cache, po_rows, tab, as_of, alert_days):
+    """'open PO alerts' tab: late lines (PO date alert_days or more days ago, still in the sheet) and lines without a date."""
+    headers = {}
+    for column in range(1, final.max_column + 1):
+        name = final.cell(2, column).value
+        if name is None or isinstance(name, bool):
+            name = final.cell(1, column).value
+        if name is not None and str(name) not in headers:
+            headers[str(name)] = column
+    by_key = {description_key(final.cell(r, DESC_COL).value): r for r in range(3, final.max_row + 1) if final.cell(r, DESC_COL).value}
+    def value(r, name):
+        column = headers.get(name)
+        if r is None or column is None:
+            return ""
+        v = planning_cache.get(f"{get_column_letter(column)}{r}", final.cell(r, column).value)
+        return "" if v is None else v
+    lines = []
+    for r, row in zip(po_rows, tab):
+        if not str(row[9]).startswith("Counted"):
+            continue
+        po_date = r.get("date")
+        age = (as_of - po_date).days if po_date else None
+        row_no = by_key.get(description_key(row[7]))
+        stock = final.cell(row_no, BASE_COLS_QTY).value if row_no else ""
+        out_now = isinstance(stock, (int, float)) and stock <= 0
+        avg = value(row_no, "Three month avg/day")
+        if po_date is None:
+            state, rank = "DATE MISSING", 2
+        elif age >= alert_days:
+            state, rank = ("ZERO QTY + LATE", 0) if out_now else ("LATE", 1)
+        else:
+            continue
+        lines.append({"state": state, "rank": rank, "date": po_date, "age": age, "late": (age - alert_days) if age is not None else "",
+                      "num": r["num"], "brand": row[2], "description": r["description"], "qty": row[5], "counted": row[6],
+                      "stock": stock, "avg": avg if isinstance(avg, (int, float)) else "", "vendor": value(row_no, "Last vendor")})
+    lines.sort(key=lambda x: (x["rank"], -(x["age"] if x["age"] is not None else 0), -(x["avg"] if isinstance(x["avg"], (int, float)) else 0)))
+    late = [x for x in lines if x["rank"] < 2]
+    sheet = target.create_sheet(OPEN_PO_SHEET_NAME)
+    navy, white = PatternFill("solid", fgColor="17365D"), Font(bold=True, color="FFFFFF")
+    fills = {"ZERO QTY + LATE": PatternFill("solid", fgColor="F4B183"), "LATE": PatternFill("solid", fgColor="FCE4D6"),
+             "DATE MISSING": PatternFill("solid", fgColor="FFF2CC")}
+    side = Side(style="thin", color="999999")
+    border = Border(left=side, right=side, top=side, bottom=side)
+    sheet.cell(1, 1, f"Open PO alerts - {as_of:%d-%b-%Y}").font = Font(bold=True, size=14)
+    sheet.cell(2, 1, f"Lines open {alert_days} or more days after the PO date. Remove a line from the Open PO sheet when the stock arrives.").font = Font(color="555555")
+    boxes = [("Late lines", len(late), "F2F2F2"), ("Zero QTY + late", sum(1 for x in late if x["rank"] == 0), "F4B183"),
+             ("Late units", round(sum(x["counted"] for x in late), 1), "F2F2F2"), ("Date missing", sum(1 for x in lines if x["rank"] == 2), "FFF2CC")]
+    for j, (label, number_, color) in enumerate(boxes, 1):
+        cell = sheet.cell(4, j, f"{label}: {number_:g}")
+        cell.fill, cell.font, cell.border = PatternFill("solid", fgColor=color), Font(bold=True), border
+        cell.alignment = Alignment(horizontal="center")
+    head = 6
+    columns = [("Alert", "state", 24), ("PO date", "date", 14), ("Days open", "age", 10), ("Days late", "late", 10), ("PO #", "num", 10),
+               ("Brand", "brand", 24), ("description", "description", 52), ("Open QTY", "qty", 10), ("Stock now", "stock", 10),
+               ("Avg/day", "avg", 10), ("Last vendor", "vendor", 26)]
+    for j, (label, field, width) in enumerate(columns, 1):
+        cell = sheet.cell(head, j, label)
+        cell.fill, cell.font, cell.border = navy, white, border
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        sheet.column_dimensions[get_column_letter(j)].width = max(width, 21 if j <= 4 else width)
+    sheet.row_dimensions[head].height = 30
+    for i, rec in enumerate(lines, head + 1):
+        for j, (label, field, width) in enumerate(columns, 1):
+            v = rec[field]
+            if v is None or v == "":
+                v = "-" if field in ("date", "age", "late") else ""
+            cell = sheet.cell(i, j, v)
+            if isinstance(v, str) and v.startswith("="):
+                cell.data_type = "s"
+            cell.fill, cell.border = fills[rec["state"]], border
+            if field == "date" and rec["date"]:
+                cell.number_format = "dd-mmm-yyyy"
+            elif field == "avg":
+                cell.number_format = "0.00"
+            if field == "state":
+                cell.font = Font(bold=True)
+            if field in ("date", "age", "late", "num", "qty", "stock", "avg"):
+                cell.alignment = Alignment(horizontal="center")
+    if lines:
+        sheet.auto_filter.ref = f"A{head}:{get_column_letter(len(columns))}{head + len(lines)}"
+    else:
+        sheet.cell(head + 1, 1, "No late open PO lines.")
+    sheet.sheet_view.showGridLines = False
+    print(f"  Open PO alerts: {len(late):,} late ({boxes[1][1]:,} zero QTY), {boxes[3][1]:,} without a date, "
+          f"{len(po_rows) - len(lines):,} other lines not listed", flush=True)
+
+
 def arrange_tabs(target):
     # Source tabs first, all clean tabs together, then inventory work and reports.
     for sheet in list(target):
@@ -1442,7 +1540,7 @@ def arrange_tabs(target):
     source = [n for n in target.sheetnames if " raw" in n or n.startswith("current ")]
     clean = [n for n in target.sheetnames if n.endswith(" clean")]
     work = ["open PO", "master price book", "inv with PB desc", "inv summarized", "inv status lookup",
-            "active inventory", "final sheet"]
+            "active inventory", "final sheet", OPEN_PO_SHEET_NAME]
     other = [n for n in target.sheetnames if n not in source + clean + work]
     ordered = source + clean + other + [n for n in work if n in target.sheetnames]
     for desired, name in enumerate(ordered):
@@ -1475,6 +1573,16 @@ def validate_demand_settings(cfg):
         raise ValueError("DEMAND['new_item_store_periods'] must be >= 1.")
 
 
+def _po_date(value):
+    if value in (None, ""):
+        return None
+    try:
+        parsed = parse_date(value, "open PO date")
+        return parsed.date() if parsed else None
+    except ValueError:
+        return None
+
+
 def open_po_rows(path):
     """Read the open PO workbook (first sheet that has a description and an open-quantity header).
 
@@ -1491,6 +1599,7 @@ def open_po_rows(path):
         "ordered": ("qty", "quantity", "orderedqty", "qtyordered"),
         "received": ("rcvd", "received", "receivedqty", "qtyreceived", "rcvdqty"),
         "num": ("num", "ponumber", "po", "pono", "ponum"),
+        "date": ("podate", "date", "orderdate", "dateordered", "orderdate", "createddate", "transactiondate"),
     }
     workbook = load_workbook(path, read_only=True, data_only=True)
     try:
@@ -1518,7 +1627,8 @@ def open_po_rows(path):
                     received = number(get("received"), f"{sheet.title}!row {row_number}") if pick["received"] is not None else 0
                     qty = None if ordered is None else ordered - (received or 0)
                 rows.append({"box": clean_upc(get("box")), "master": clean_upc(get("master")), "brand": trim(get("brand")),
-                             "description": description, "qty": qty, "num": trim(get("num"))})
+                             "description": description, "qty": qty, "num": trim(get("num")),
+                             "date": _po_date(get("date"))})
             return rows
         raise ValueError("Open PO file: no sheet with a DESCRIPTION header and an open quantity header (OQ / Open Qty / Backordered / Qty).")
     finally:
@@ -1531,7 +1641,7 @@ def purchase_costs(purchase_rows, checks):
     `checks` is the lookup of every purchase line against active inventory (description, master/box UPC one
     code at a time, Price Book mapping). Lines that match more than one SKU, or none, are skipped.
     Rates of 0 or less are ignored. Last = latest bill date (later line wins a tie); lowest = smallest rate
-    (the latest one wins a tie). Returns ({description_key: (last, last vendor, lowest, lowest vendor)}, stats).
+    (the latest one wins a tie). Returns ({description_key: (last, last vendor, lowest, lowest vendor, date of that lowest-rate bill)}, stats).
     """
     best, stats = {}, Counter()
     for position, (row, check) in enumerate(zip(purchase_rows, checks)):
@@ -1551,7 +1661,7 @@ def purchase_costs(purchase_rows, checks):
         if entry["low"] is None or (float(row[7]), -stamp[0].toordinal(), -position) < (entry["low"][1], -entry["low"][0][0].toordinal(), -entry["low"][0][1]):
             entry["low"] = (stamp, float(row[7]), row[6])
         stats["lines used"] += 1
-    return {k: (v["last"][1], v["last"][2], v["low"][1], v["low"][2]) for k, v in best.items()}, stats
+    return {k: (v["last"][1], v["last"][2], v["low"][1], v["low"][2], v["low"][0][0] if v["low"][0][0] != datetime.min else "") for k, v in best.items()}, stats
 
 
 class InventoryMatcher:
@@ -1803,8 +1913,9 @@ def add_demand_planning(sheet, active_rows, sales_rows, sales_checks, covered_mo
               'Incoming QTY','Order multiple','Days cover','Stock at arrival',
               'Suggested order QTY','Priority','Planning notes',
               'ABC class','Item class','Auto order?','Safety factor','Reference order QTY',
-              'Last buying price','Last vendor','Lowest buying price','Lowest price vendor']
-    shown = {'WH window 1': f'WH last {W} days', 'WH window 2': f'WH previous {W} days',
+              'Last buying price','Last vendor','Lowest buying price','Lowest price vendor','Lowest price date']
+    shown = {'Daily demand': 'Three month avg/day',
+             'WH window 1': f'WH last {W} days', 'WH window 2': f'WH previous {W} days',
              'WH window 3': f'WH days {2*W+1}-{3*W}'}
     columns = {name:first+i for i,name in enumerate(labels)}
     for i,label in enumerate(labels):
@@ -1819,8 +1930,9 @@ def add_demand_planning(sheet, active_rows, sales_rows, sales_checks, covered_mo
     for i,(start,finish) in enumerate(windows):
         sheet.cell(2,first+i).comment = Comment(f'{start} through {finish}, {W} calendar days. Net invoice quantity; negative net demand is clipped to zero.','Planning')
     sheet.cell(2,columns['Daily demand']).comment = Comment(f'Weights {w_txt[0]} / {w_txt[1]} / {w_txt[2]} on the three {W}-day windows (newest first); divide by {W}. For "New - stores selling" items: {nf_txt} x units sold in the latest window / {W} (expected store re-orders). Requires complete sales exports. Stockout days cannot be adjusted without stock history.','Planning')
-    sheet.cell(2,columns['Current month avg/day']).comment = Comment(f'Units sold from {end.replace(day=1)} through {end} divided by {end.day} days (month to date, yesterday is the last full day). For comparison with Daily demand: a higher value means this month is running above the weighted average. Not used in the order calculation.','Planning')
+    sheet.cell(2,columns['Current month avg/day']).comment = Comment(f'Units sold from {end.replace(day=1)} through {end} divided by {end.day} days (month to date, yesterday is the last full day). For comparison with Three month avg/day: a higher value means this month is running above the weighted average. Not used in the order calculation.','Planning')
     sheet.cell(2,columns['Last buying price']).comment = Comment('Rate of the latest Bill line for this SKU in the purchase exports (6 months + current month). Vendor = the vendor of that Bill. Blank = no priced purchase found.','Planning')
+    sheet.cell(2,columns['Lowest price date']).comment = Comment('Bill date of the purchase line that gave the lowest buying price (if the same lowest rate was billed several times, the latest date). Tells you when the cheap stock last came in.','Planning')
     sheet.cell(2,columns['Lowest buying price']).comment = Comment('Smallest Rate on any Bill line for this SKU in the purchase exports, with the vendor who gave it.','Planning')
     sheet.cell(2,columns['Incoming QTY']).comment = Comment(f'Editable. Default {cfg["default_incoming"]} assumes no pending receipts. Count only confirmed incoming in warehouse units arriving by the {lead0}-day receipt date. Use planning_inputs workbook to persist per-SKU entries across script runs.','Planning')
     sheet.cell(2,columns['Target cover days']).comment = Comment(f'{target0} days stock AFTER delivery. Order target includes consumption during the {lead0}-day lead time.','Planning')
@@ -1901,10 +2013,12 @@ def add_demand_planning(sheet, active_rows, sales_rows, sales_checks, covered_mo
         if cfg['show_export_note'] and (latest_date is None or latest_date<end):notes.append(f'Latest WH sale: {latest_date}; confirm export through {end}')
         sheet.cell(r,columns['Planning notes'],'; '.join(notes))
         cost=(costs or {}).get(description_key(active[2]))
-        for label,value in zip(['Last buying price','Last vendor','Lowest buying price','Lowest price vendor'],cost or ('','','','')):
+        for label,value in zip(['Last buying price','Last vendor','Lowest buying price','Lowest price vendor','Lowest price date'],cost or ('','','','','')):
             cell=sheet.cell(r,columns[label],value)
-            if 'price' in label:
+            if 'price' in label and label != 'Lowest price date':
                 cell.number_format='#,##0.00'
+            elif label == 'Lowest price date' and value != '':
+                cell.number_format='dd-mmm-yyyy'
         for label in ['Daily demand','Current month avg/day','Days cover','Stock at arrival','Suggested order QTY','Reference order QTY']:
             sheet.cell(r,columns[label]).number_format='0.00'
         counts[priority]+=1
@@ -1946,19 +2060,15 @@ def run(paths):
     purchase_clean_rows = []
     sales_clean_rows = []
     sales_base_sheet = None
-    import gc
     for kind in ("inventory", "purchase", "sales"):
         print(f"\nReading {kind}: {source_paths[kind]}", flush=True)
         source = load_workbook(source_paths[kind], data_only=False)
         cached = load_workbook(source_paths[kind], data_only=True, read_only=True)
         try:
             sheet, header_row, cols = find_source(cached, kind)
-            if INCLUDE_RAW_TABS:
-                raw = target.create_sheet(kind + " raw")
-                print(f"  Preserving original sheet: {sheet.title}", flush=True)
-                copy_raw(source[sheet.title], raw)
-            else:
-                raw = None
+            raw = target.create_sheet(kind + " raw")
+            print(f"  Preserving original sheet: {sheet.title}", flush=True)
+            copy_raw(source[sheet.title], raw)
             clean = target.create_sheet(kind + " clean")
             stats = Counter()
             headers, rows = (inventory_rows(sheet, header_row, cols, stats) if kind == "inventory"
@@ -1976,8 +2086,7 @@ def run(paths):
                         a_sheet, a_header, a_cols = find_source(append_cached, kind)
                         append_headers, append_rows = transaction_rows(a_sheet, a_header, a_cols, kind, Counter())
                         coverage = append_date_range(a_sheet, kind, a_cols, append_rows)
-                        if INCLUDE_RAW_TABS:
-                            copy_raw(append_source[a_sheet.title], target.create_sheet(kind + " append raw"))
+                        copy_raw(append_source[a_sheet.title], target.create_sheet(kind + " append raw"))
                         print(f"  Append replaces dates {coverage[0]} through {coverage[1]} ({len(append_rows):,} qualifying rows)", flush=True)
                     finally:
                         append_source.close()
@@ -1988,12 +2097,8 @@ def run(paths):
                 purchase_clean_rows = rows
             if kind == "sales":
                 sales_clean_rows = rows
-                if INCLUDE_RAW_TABS:
-                    # This copied worksheet survives closing the source workbook.
-                    sales_base_sheet = raw
-                else:
-                    # Save just the coverage label text instead of the entire raw sheet.
-                    sales_base_sheet = trim(source[sheet.title].cell(3, 1).value)
+                # This copied worksheet survives closing the source workbook.
+                sales_base_sheet = raw
             if kind == "inventory":
                 inventory_clean_rows = rows
                 # Store real Excel PROPER formulas; cached results added on save.
@@ -2010,7 +2115,6 @@ def run(paths):
         finally:
             source.close()
             cached.close()
-            gc.collect()
     proper_inventory = [[r[0], r[1], proper(r[2]), r[3]] for r in inventory_clean_rows]
     print("\nMapping inventory to Master Price Book...", flush=True)
     mapped, lookup_counts = lookup_inventory(proper_inventory, indexes)
@@ -2040,6 +2144,7 @@ def run(paths):
     # Open PO: read fresh each run (a new file fully replaces the old one, nothing is stored in history).
     overrides = planning_inputs(paths.get("planning_inputs", ""), DEMAND)
     incoming_notes, po_incoming = {}, {}
+    po_rows = po_tab = None
     po_path = paths.get("open_po", "")
     if po_path:
         po_path = Path(po_path).expanduser().resolve()
@@ -2076,8 +2181,6 @@ def run(paths):
     sales_items = [row[1:7] for row in sales_clean_rows]
     sales_summary_checks, _ = reverse_purchase_check(summarized, sales_items, indexes)
     sales_active_checks, _ = reverse_purchase_check(active_rows, sales_items, indexes)
-    del sales_items  # free ~246K list
-    gc.collect()
     add_lookup_columns(target["sales clean"], sales_summary_checks, sales_active_checks)
     as_of = date.fromisoformat(AS_OF_DATE) if AS_OF_DATE else datetime.now(timezone(timedelta(hours=5))).date()
     covered_months = sales_coverage_months(sales_base_sheet, sales_clean_rows, history)
@@ -2094,12 +2197,17 @@ def run(paths):
     print(f"  Inactive: {len(audit_rows) - len(active_rows):,}", flush=True)
     print("\nPreparing store sales and cross checks...", flush=True)
     store_values = add_stores_reports(paths, target, summarized, active_rows, indexes, history, as_of, sales_headers, monthly_rows)
+    alert_days = int(OPEN_PO_ALERT_DAYS if OPEN_PO_ALERT_DAYS else DEMAND["lead_time"])
+    late_note = late_open_pos(po_rows, po_tab, as_of, alert_days) if po_rows is not None else {}
     for key, qty in po_incoming.items():
         inc, mult = overrides.get(key, (DEMAND["default_incoming"], DEMAND["default_order_multiple"]))
         overrides[key] = (inc + qty, mult)
-        incoming_notes[key] = f"Open PO: {qty:g} units incoming"
+        incoming_notes[key] = f"Open PO: {qty:g} units incoming" + (f" - PO LATE: open {late_note[key]} days (lead {alert_days})" if key in late_note else "")
     planning_cache = add_demand_planning(target["final sheet"], active_rows, sales_clean_rows, sales_active_checks, covered_months, as_of,
                                          overrides, DEMAND, store_values, incoming_notes, costs)
+    if po_rows is not None and OPEN_PO_ALERTS:
+        print("\nBuilding open PO alerts...", flush=True)
+        build_open_po_alerts(target, target["final sheet"], planning_cache, po_rows, po_tab, as_of, alert_days)
     arrange_tabs(target)
     format_output_tabs(target)
     if not INCLUDE_RAW_TABS:
@@ -2119,43 +2227,12 @@ def run(paths):
             raise ValueError("Ordering workbook path must differ from the main output and the inputs.")
         print("\nBuilding ordering workbook...", flush=True)
         build_ordering_workbook(target["final sheet"], planning_cache, ordering_path)
-    # Free large data structures before saving to reduce peak memory during XML serialization.
-    del sales_clean_rows, purchase_clean_rows, inventory_clean_rows
-    del active_rows, summarized, audit_rows, proper_inventory, mapped
-    del sales_active_checks, purchase_checks, purchase_active_checks
-    del sales_summary_checks
-    try:
-        del store_values, planning_cache, costs
-    except NameError:
-        pass
-    gc.collect()
     output.parent.mkdir(parents=True, exist_ok=True)
-    # Stream the two largest sheets (sales clean, stores sales clean) directly into a
-    # separate write-only workbook.  write_only=True never holds old rows in memory, so
-    # peak usage stays flat regardless of sheet size.  After streaming, the sheets are
-    # removed from the main workbook so its save is also lightweight.
-    large_sheet_names = [n for n in target.sheetnames if n in ("sales clean", "stores sales clean")]
-    detail_path = output.with_name(output.stem + "_Detail_Sheets.xlsx")
-    if large_sheet_names:
-        print(f"\nStreaming {len(large_sheet_names)} large sheet(s) to detail file...", flush=True)
-        wb_detail = Workbook(write_only=True)
-        for sheet_name in large_sheet_names:
-            ws_src = target[sheet_name]
-            ws_dst = wb_detail.create_sheet(sheet_name)
-            for row in ws_src.iter_rows(values_only=True):
-                ws_dst.append(list(row))
-            del target[sheet_name]
-            print(f"  '{sheet_name}' streamed OK", flush=True)
-        gc.collect()
-        wb_detail.save(str(detail_path))
-        wb_detail.close()
-        del wb_detail
-        gc.collect()
-        paths["output_detail"] = str(detail_path)
-        print(f"  Detail sheets saved: {detail_path}", flush=True)
-    # Save the main workbook (now without the largest sheets).
+    # Save atomically so a failed save does not leave a half-written deliverable.
     temporary = output.with_name(output.stem + ".tmp.xlsx")
     print(f"\nSaving: {output}", flush=True)
+    # Formulas are saved WITHOUT patching the XML afterwards (that patching made Excel ask to repair the
+    # file and doubled the save time). Excel calculates every formula when the file is opened.
     target.calculation.fullCalcOnLoad = True
     target.save(temporary)
     temporary.replace(output)
