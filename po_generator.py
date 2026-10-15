@@ -1,4 +1,3 @@
-
 import argparse
 import re
 import sys
@@ -16,8 +15,9 @@ CONFIG = {
     "output_folder": r"E:\Downloads\Automate\PO",
 }
 
-PO_PRICE_BASIS = "last"          # "last"  = Last buying price + Last vendor
-                                 # "lowest" = Lowest buying price + Lowest price vendor
+PO_PRICE_BASIS = "last"          # which VENDOR to use (no prices are printed any more):
+                                 # "last"  = Last vendor
+                                 # "lowest" = Lowest price vendor
 ORDERING_SHEET = "ordering sheet"  # tab of the ordering workbook to read
 PO_COLUMN = "PO"                 # header of the column in which you write PO
 PO_MARK = "PO"                   # the text that selects a row (not case sensitive)
@@ -92,7 +92,7 @@ def read_marked_lines(path):
     """Returns (lines, skipped). A line is a dict; skipped rows carry a reason."""
     if PO_PRICE_BASIS not in ("last", "lowest"):
         raise ValueError('PO_PRICE_BASIS must be "last" or "lowest".')
-    price_key, vendor_key = ("last_price", "last_vendor") if PO_PRICE_BASIS == "last" else ("lowest_price", "lowest_vendor")
+    vendor_key = "last_vendor" if PO_PRICE_BASIS == "last" else "lowest_vendor"
     try:
         workbook = load_workbook(path, read_only=True, data_only=True)
     except PermissionError:
@@ -111,7 +111,7 @@ def read_marked_lines(path):
             return index
         po_col = column(PO_COLUMN)
         c_desc, c_qty = column(COLUMNS["description"]), column(COLUMNS["qty"])
-        c_price, c_vendor = column(COLUMNS[price_key]), column(COLUMNS[vendor_key])
+        c_vendor = column(COLUMNS[vendor_key])  # the price basis only decides which vendor column is used
         c_box, c_master = column(COLUMNS["box_upc"], False), column(COLUMNS["master_upc"], False)
         mark = trim(PO_MARK).casefold()
         lines, skipped, marked, uncalculated = [], [], 0, 0
@@ -121,7 +121,7 @@ def read_marked_lines(path):
                 continue
             marked += 1
             item = {"row": number, "description": trim(get(c_desc)), "qty": to_number(get(c_qty)),
-                    "price": to_number(get(c_price)), "vendor": trim(get(c_vendor)),
+                    "vendor": trim(get(c_vendor)),
                     "box": trim(get(c_box)), "master": trim(get(c_master))}
             if get(c_qty) is None:
                 uncalculated += 1
@@ -129,8 +129,6 @@ def read_marked_lines(path):
                 item["reason"] = f"{COLUMNS['qty']} is blank or 0"
             elif not item["vendor"]:
                 item["reason"] = f"no vendor ({COLUMNS[vendor_key]} is blank)"
-            elif item["price"] is None or item["price"] <= 0:
-                item["reason"] = f"no price ({COLUMNS[price_key]} is blank)"
             if item.get("reason"):
                 skipped.append(item)
             else:
@@ -193,20 +191,17 @@ def write_pdf(path, po_no, po_date, vendor, items):
     info.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#17365D")),
                               ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F2F6FA"))]))
 
-    data = [["#", "Description", "Qty", "Price", "Amount"]]
-    total_qty = total_amount = 0.0
+    data = [["#", "Description", "Qty"]]
+    total_qty = 0.0
     for number, item in enumerate(items, 1):
-        amount = round(item["qty"] * item["price"], 2)
         total_qty += item["qty"]
-        total_amount += amount
         text = Paragraph(item["description"], normal)
         if SHOW_UPC_IN_PDF and (item["box"] or item["master"]):
             codes = "  ".join(x for x in (f"Box: {item['box']}" if item["box"] else "", f"UPC: {item['master']}" if item["master"] else "") if x)
             text = [Paragraph(item["description"], normal), Paragraph(codes, small)]
-        data.append([str(number), text, qty_text(item["qty"]), f"{CURRENCY}{price_text(item['price'])}",
-                     money(amount)])
-    data.append(["", Paragraph("<b>TOTAL</b>", normal), Paragraph(f"<b>{qty_text(total_qty)}</b>", right), "", Paragraph(f"<b>{money(total_amount)}</b>", right)])
-    table = Table(data, colWidths=[10 * mm, 98 * mm, 20 * mm, 24 * mm, 28 * mm], repeatRows=1)
+        data.append([str(number), text, qty_text(item["qty"])])
+    data.append(["", Paragraph("<b>TOTAL</b>", normal), Paragraph(f"<b>{qty_text(total_qty)}</b>", right)])
+    table = Table(data, colWidths=[12 * mm, 138 * mm, 30 * mm], repeatRows=1)
     last = len(data) - 1
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#17365D")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
@@ -221,7 +216,7 @@ def write_pdf(path, po_no, po_date, vendor, items):
     if trim(PO_NOTES):
         story += [Spacer(1, 5 * mm), Paragraph(trim(PO_NOTES), normal)]
     document.build(story, onFirstPage=footer, onLaterPages=footer)
-    return total_qty, total_amount
+    return total_qty
 
 
 def write_merged_excel(path, po_date, orders, skipped):
@@ -241,48 +236,42 @@ def write_merged_excel(path, po_date, orders, skipped):
         ws.row_dimensions[1].height = 24
         ws.sheet_view.showGridLines = False
 
-    names = ["PO No.", "PO Date", "Vendor"] + (["box upc", "master upc"] if SHOW_UPC_IN_EXCEL else []) + ["Description", "Qty", "Price", "Amount"]
-    widths = [20, 13, 30] + ([18, 18] if SHOW_UPC_IN_EXCEL else []) + [60, 10, 12, 14]
+    names = ["PO No.", "PO Date", "Vendor"] + (["box upc", "master upc"] if SHOW_UPC_IN_EXCEL else []) + ["Description", "Qty"]
+    widths = [20, 13, 30] + ([18, 18] if SHOW_UPC_IN_EXCEL else []) + [60, 10]
     header(sheet, names, widths)
-    grand_qty = grand_amount = 0.0
-    for po_no, vendor, items, _, _ in orders:
+    grand_qty = 0.0
+    desc_col = 4 + (2 if SHOW_UPC_IN_EXCEL else 0)
+    for po_no, vendor, items, _ in orders:
         for item in items:
-            amount = round(item["qty"] * item["price"], 2)
-            row = [po_no, po_date, vendor] + ([item["box"], item["master"]] if SHOW_UPC_IN_EXCEL else []) + [item["description"], item["qty"], item["price"], amount]
+            row = [po_no, po_date, vendor] + ([item["box"], item["master"]] if SHOW_UPC_IN_EXCEL else []) + [item["description"], item["qty"]]
             sheet.append(row)
             for cell in sheet[sheet.max_row]:
                 cell.border = border
-            base = 3 + (2 if SHOW_UPC_IN_EXCEL else 0)
             sheet.cell(sheet.max_row, 2).number_format = "yyyy-mm-dd"
-            for offset in (4, 5, 6, 7):
-                sheet.cell(sheet.max_row, base + offset - 3).alignment = Alignment(horizontal="right") if offset > 4 else Alignment(wrap_text=True)
-            sheet.cell(sheet.max_row, base + 2).number_format = "#,##0.##"
-            sheet.cell(sheet.max_row, base + 3).number_format = "#,##0.00##"
-            sheet.cell(sheet.max_row, base + 4).number_format = "#,##0.00"
+            sheet.cell(sheet.max_row, desc_col).alignment = Alignment(wrap_text=True)
+            sheet.cell(sheet.max_row, desc_col + 1).alignment = Alignment(horizontal="right")
+            sheet.cell(sheet.max_row, desc_col + 1).number_format = "#,##0.##"
             grand_qty += item["qty"]
-            grand_amount += amount
     sheet.auto_filter.ref = f"A1:{get_column_letter(sheet.max_column)}{sheet.max_row}"
 
     summary = workbook.create_sheet("PO summary")
-    header(summary, ["PO No.", "PO Date", "Vendor", "Lines", "Total Qty", "Total Amount", "PDF file"], [20, 13, 34, 8, 12, 16, 60])
-    for po_no, vendor, items, total_qty, total_amount in orders:
-        summary.append([po_no, po_date, vendor, len(items), total_qty, total_amount, pdf_file_name(vendor, po_date)])
+    header(summary, ["PO No.", "PO Date", "Vendor", "Lines", "Total Qty", "PDF file"], [20, 13, 34, 8, 12, 60])
+    for po_no, vendor, items, total_qty in orders:
+        summary.append([po_no, po_date, vendor, len(items), total_qty, pdf_file_name(vendor, po_date)])
         for cell in summary[summary.max_row]:
             cell.border = border
         summary.cell(summary.max_row, 2).number_format = "yyyy-mm-dd"
         summary.cell(summary.max_row, 5).number_format = "#,##0.##"
-        summary.cell(summary.max_row, 6).number_format = "#,##0.00"
-    summary.append(["TOTAL", "", "", sum(len(o[2]) for o in orders), grand_qty, round(grand_amount, 2), ""])
+    summary.append(["TOTAL", "", "", sum(len(o[2]) for o in orders), grand_qty, ""])
     for cell in summary[summary.max_row]:
         cell.font, cell.border, cell.fill = Font(bold=True), border, PatternFill("solid", fgColor="E3ECF5")
     summary.cell(summary.max_row, 5).number_format = "#,##0.##"
-    summary.cell(summary.max_row, 6).number_format = "#,##0.00"
 
     if skipped:
         sk = workbook.create_sheet("Not ordered")
-        header(sk, ["Row in ordering sheet", "Description", "Qty", "Vendor", "Price", "Reason"], [12, 60, 10, 30, 12, 50])
+        header(sk, ["Row in ordering sheet", "Description", "Qty", "Vendor", "Reason"], [12, 60, 10, 30, 50])
         for item in skipped:
-            sk.append([item["row"], item["description"], item["qty"], item["vendor"], item["price"], item["reason"]])
+            sk.append([item["row"], item["description"], item["qty"], item["vendor"], item["reason"]])
             for cell in sk[sk.max_row]:
                 cell.border = border
     workbook.save(path)
@@ -309,12 +298,12 @@ def main():
         for number, (vendor, items) in enumerate(group_by_vendor(lines), 1):
             po_no = f"{PO_PREFIX}-{po_date:%Y%m%d}-{number:02d}"
             pdf = folder / pdf_file_name(vendor, po_date)
-            total_qty, total_amount = write_pdf(pdf, po_no, po_date, vendor, items)
-            orders.append((po_no, vendor, items, total_qty, total_amount))
-            print(f"  {po_no}  {vendor}: {len(items)} lines, qty {qty_text(total_qty)}, {money(total_amount)}", flush=True)
+            total_qty = write_pdf(pdf, po_no, po_date, vendor, items)
+            orders.append((po_no, vendor, items, total_qty))
+            print(f"  {po_no}  {vendor}: {len(items)} lines, qty {qty_text(total_qty)}", flush=True)
         merged = folder / f"All_POs_{po_date.isoformat()}.xlsx"
         write_merged_excel(merged, po_date, orders, skipped)
-        print(f"\n{len(orders)} PO(s), {len(lines)} lines, total {money(sum(o[4] for o in orders))}")
+        print(f"\n{len(orders)} PO(s), {len(lines)} lines, total qty {qty_text(sum(o[3] for o in orders))}")
         if skipped:
             print(f"WARNING: {len(skipped)} marked row(s) could not be ordered (see 'Not ordered' tab):")
             for item in skipped[:15]:
