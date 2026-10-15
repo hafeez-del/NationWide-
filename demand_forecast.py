@@ -55,7 +55,7 @@ SORT_CLEAN_SHEETS = True
 # False = do NOT write the copies of the original exports ("... raw", "current ...") into the output.
 # They are only used while the script runs; skipping them makes saving much faster and the file far smaller
 # (the 245k-row sales raw tab alone is ~2.4 million cells). Your original files are untouched either way.
-INCLUDE_RAW_TABS = True
+INCLUDE_RAW_TABS = False
 # ---------------- ORDERING SHEET (tab 2 of the second workbook) ----------------
 # Add, delete or reorder columns here. Every name must be a column header of 'final sheet'
 # (Department, Brand, box upc, master upc, description, Pack of, QTY, Negative QTY flag, PB description,
