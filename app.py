@@ -241,6 +241,7 @@ ALL_ORDERING_COLUMNS = [
     "Days cover", "Stock at arrival", "Daily demand", "WH trend",
     "Lead days", "Reorder below days", "Target cover days", "Order multiple",
     "Last buying price", "Last vendor", "Lowest buying price", "Lowest price vendor",
+    "Lowest price date",
     "Status", "Current month avg/day",
 ]
 
