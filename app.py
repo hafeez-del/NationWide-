@@ -296,6 +296,7 @@ try:
             st.markdown("##### Optional Files")
             f_pur_append = st.file_uploader("Current Purchase Warehouse (optional)", type=["xlsx"], key="df_pur_app")
             f_sal_append = st.file_uploader("Current Sales Warehouse (optional)", type=["xlsx"], key="df_sal_app")
+            f_stores_append = st.file_uploader("Stores Sales Append (optional)", type=["xlsx"], key="df_stores_app")
             f_open_po = st.file_uploader("Open PO's (optional)", type=["xlsx"], key="df_po")
             f_planning = st.file_uploader("Planning Inputs (optional)", type=["xlsx"], key="df_plan")
 
@@ -372,6 +373,7 @@ try:
                         "sales": save_upload(f_sales, tmp, "sales.xlsx"),
                         "pricebook": save_upload(f_pricebook, tmp, "pricebook.xlsx"),
                         "stores_sales": save_upload(f_stores, tmp, "stores_sales.xlsx"),
+                        "stores_sales_append": save_upload(f_stores_append, tmp, "stores_sales_append.xlsx"),
                         "purchase_append": save_upload(f_pur_append, tmp, "purchase_append.xlsx"),
                         "sales_append": save_upload(f_sal_append, tmp, "sales_append.xlsx"),
                         "open_po": save_upload(f_open_po, tmp, "open_po.xlsx"),
