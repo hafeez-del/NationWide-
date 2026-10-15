@@ -501,9 +501,9 @@ try:
         st.markdown("---")
         st.markdown("##### ⚙️ Settings")
         price_basis = st.radio(
-            "Price Basis (which vendor price to use?)",
+            "Vendor Basis (which vendor to order from?)",
             options=["last", "lowest"],
-            format_func=lambda x: "Last buying price + Last vendor" if x == "last" else "Lowest buying price + Lowest price vendor",
+            format_func=lambda x: "Last vendor" if x == "last" else "Lowest price vendor",
             horizontal=True,
             key="po_price",
         )
@@ -546,14 +546,14 @@ try:
                         for number, (vendor, items) in enumerate(pg.group_by_vendor(lines), 1):
                             po_no = f"{pg.PO_PREFIX}-{po_date:%Y%m%d}-{number:02d}"
                             pdf = folder / pg.pdf_file_name(vendor, po_date)
-                            total_qty, total_amount = pg.write_pdf(pdf, po_no, po_date, vendor, items)
-                            orders.append((po_no, vendor, items, total_qty, total_amount))
-                            print(f"  {po_no}  {vendor}: {len(items)} lines, qty {pg.qty_text(total_qty)}, {pg.money(total_amount)}", flush=True)
+                            total_qty = pg.write_pdf(pdf, po_no, po_date, vendor, items)
+                            orders.append((po_no, vendor, items, total_qty))
+                            print(f"  {po_no}  {vendor}: {len(items)} lines, qty {pg.qty_text(total_qty)}", flush=True)
 
                         merged = folder / f"All_POs_{po_date.isoformat()}.xlsx"
                         pg.write_merged_excel(merged, po_date, orders, skipped)
 
-                        print(f"\n{len(orders)} PO(s), {len(lines)} lines, total {pg.money(sum(o[4] for o in orders))}", flush=True)
+                        print(f"\n{len(orders)} PO(s), {len(lines)} lines, total qty {pg.qty_text(sum(o[3] for o in orders))}", flush=True)
                         if skipped:
                             print(f"WARNING: {len(skipped)} marked row(s) could not be ordered", flush=True)
 
