@@ -317,6 +317,14 @@ try:
             with c4:
                 window_days = st.number_input("Window Days", value=30, min_value=1, key="df_window")
 
+            po_alert_days = st.number_input(
+                "Open PO Alert Days",
+                value=0,
+                min_value=0,
+                key="df_po_alert",
+                help="A PO older than this many days and still in the Open PO sheet is flagged as an alert. 0 = use Lead Time.",
+            )
+
             st.markdown("**Weights** (3 windows, newest to oldest — total = 1.0)")
             wc1, wc2, wc3 = st.columns(3)
             with wc1:
@@ -419,6 +427,7 @@ try:
                     df.DEMAND["target_days"] = target_days
                     df.DEMAND["window_days"] = window_days
                     df.DEMAND["weights"] = (w1, w2, w3)
+                    df.OPEN_PO_ALERT_DAYS = int(po_alert_days) if po_alert_days else None
                     df.ORDERING_COLUMNS = list(selected_columns)
                     df.ORDERING_PRIORITIES = list(selected_priorities)
 
