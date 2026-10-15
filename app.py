@@ -27,6 +27,13 @@ st.markdown("""
 /* ── Import a clean font ── */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
+/* ── Hide Streamlit/GitHub chrome (Fork, GitHub link, menu, viewer badge) for teammates ── */
+[data-testid="stToolbar"], [data-testid="stDecoration"], [data-testid="stStatusWidget"],
+#MainMenu, footer, [class*="viewerBadge"], [data-testid="manage-app-button"] {
+    display: none !important;
+    visibility: hidden !important;
+}
+
 /* ── Global tweaks ── */
 .stApp {
     font-family: 'Inter', sans-serif;
