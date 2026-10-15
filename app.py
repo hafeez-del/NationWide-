@@ -29,7 +29,9 @@ st.markdown("""
 
 /* ── Hide Streamlit/GitHub chrome (Fork, GitHub link, menu, viewer badge) for teammates ── */
 [data-testid="stToolbar"], [data-testid="stDecoration"], [data-testid="stStatusWidget"],
-#MainMenu, footer, [class*="viewerBadge"], [data-testid="manage-app-button"] {
+#MainMenu, footer, [class*="viewerBadge"], [class*="profileContainer"], [class*="profilePreview"],
+[class*="ProfileContainer"], [class*="ProfilePreview"], [data-testid="manage-app-button"], a[href*="share.streamlit.io/user/"],
+a[href*="streamlit.io/user/"], iframe[title*="profile" i] {
     display: none !important;
     visibility: hidden !important;
 }
