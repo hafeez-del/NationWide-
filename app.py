@@ -373,6 +373,7 @@ try:
                 st.error("Fix weights first — total must be 1.0.")
                 st.stop()
 
+            st.session_state.pop("df_result", None)
             with st.spinner("Processing... this may take a few minutes, please wait..."):
                 tmp = tempfile.mkdtemp(prefix="nw_df_")
                 try:
@@ -443,17 +444,11 @@ try:
 
                     log_text = log_buf.getvalue()
                     print("APP: df.run() completed!", flush=True)
-                    st.success("✅ Demand Forecast complete!")
 
-                    with st.expander("📋 Processing Log", expanded=False):
-                        st.code(log_text, language="text")
-
-                    st.markdown("##### ⬇️ Download Output Files")
-
+                    # Build the ZIP and keep everything in session_state BEFORE any st.* call, so the result
+                    # survives even if the browser reconnected and reran the page during the long run.
                     output_path = paths["output"]
                     ordering_path = paths["output_ordering"]
-
-                    # Bundle all output files into one ZIP so a single download gets everything
                     detail_path = paths.get("output_detail", "")
                     zip_buf = io.BytesIO()
                     with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -463,15 +458,7 @@ try:
                             zf.write(ordering_path, "Warehouse_Ordering_Sheet.xlsx")
                         if detail_path and os.path.isfile(detail_path):
                             zf.write(detail_path, "Warehouse_Monthly_Sales_Detail_Sheets.xlsx")
-                    zip_buf.seek(0)
-
-                    st.download_button(
-                        "📥 Download All Output Files (ZIP)",
-                        data=zip_buf.getvalue(),
-                        file_name="Demand_Forecast_Output.zip",
-                        mime="application/zip",
-                        type="primary",
-                    )
+                    st.session_state["df_result"] = {"zip": zip_buf.getvalue(), "log": log_text}
 
                 except Exception as e:
                     print(f"APP: ERROR in demand forecast: {e}", flush=True)
@@ -481,6 +468,22 @@ try:
                         st.code(traceback.format_exc(), language="text")
                 finally:
                     shutil.rmtree(tmp, ignore_errors=True)
+
+        # Show the stored result (also after a browser reconnect / page rerun)
+        df_result = st.session_state.get("df_result")
+        if df_result:
+            st.success("✅ Demand Forecast complete!")
+            with st.expander("📋 Processing Log", expanded=False):
+                st.code(df_result["log"], language="text")
+            st.markdown("##### ⬇️ Download Output Files")
+            st.download_button(
+                "📥 Download All Output Files (ZIP)",
+                data=df_result["zip"],
+                file_name="Demand_Forecast_Output.zip",
+                mime="application/zip",
+                type="primary",
+                key="df_download",
+            )
 
     print("APP: tab1 complete", flush=True)
 
