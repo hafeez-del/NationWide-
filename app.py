@@ -429,6 +429,8 @@ try:
                     df.DEMAND["window_days"] = window_days
                     df.DEMAND["weights"] = (w1, w2, w3)
                     df.OPEN_PO_ALERT_DAYS = int(po_alert_days) if po_alert_days else None
+                    # Skip the raw/current copies in the output: much smaller file and far less RAM when saving
+                    df.INCLUDE_RAW_TABS = False
                     df.ORDERING_COLUMNS = list(selected_columns)
                     df.ORDERING_PRIORITIES = list(selected_priorities)
 
