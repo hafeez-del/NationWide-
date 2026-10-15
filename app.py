@@ -296,7 +296,7 @@ try:
             st.markdown("##### Optional Files")
             f_pur_append = st.file_uploader("Current Purchase Warehouse (optional)", type=["xlsx"], key="df_pur_app")
             f_sal_append = st.file_uploader("Current Sales Warehouse (optional)", type=["xlsx"], key="df_sal_app")
-            f_stores_append = st.file_uploader("Stores Sales Append (optional)", type=["xlsx"], key="df_stores_app")
+            f_stores_append = st.file_uploader("Current Stores Sales (optional)", type=["xlsx"], key="df_stores_app")
             f_open_po = st.file_uploader("Open PO's (optional)", type=["xlsx"], key="df_po")
             f_planning = st.file_uploader("Planning Inputs (optional)", type=["xlsx"], key="df_plan")
 
