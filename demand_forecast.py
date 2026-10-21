@@ -32,10 +32,11 @@ CONFIG = {
 "stores_sales": r"E:\Downloads\Automate\nationwise\6 months pdi sales.xlsx",
 "stores_sales_append": r"E:\Downloads\Automate\nationwise\Stores_Sales_April_September.xlsx",  # blank "" = skip
 "open_po": r"E:\Downloads\Automate\nationwise\open PO's.xlsx",
+"manual_inactive": r"E:\Downloads\Automate\nationwise\manual inactive (1).xlsx",  # blank "" = skip
 "planning_inputs": "",
 "history": "",
-"output": r"E:\Downloads\Automate\Warehouse_Monthly_Sales_new_P.xlsx",
-"output_ordering": r"E:\Downloads\Automate\Warehouse_Ordering_Sheet_P.xlsx"
+"output": r"E:\Downloads\Automate\Warehouse_Monthly_Sales_new_O.xlsx",
+"output_ordering": r"E:\Downloads\Automate\Warehouse_Ordering_Sheet_O.xlsx"
 }
 
 STORES_BASE_YEAR = 2026  # Year for month-only PDI rows (change for a new base year)
@@ -69,7 +70,7 @@ INCLUDE_RAW_TABS = False
 #   "Final order QTY" = formula: the Adjustment if you typed one, otherwise the Suggested order QTY
 ORDERING_COLUMNS = ["Department", "Brand", "box upc", "master upc", "description", "PB description",
                     "Pack of", "QTY", "Incoming QTY", "Suggested order QTY", "Adjustment", "Final order QTY", "Priority",
-                    "Last buying price", "Last vendor", "Lowest buying price", "Lowest price vendor"]
+                    "Last buying price", "Last vendor", "Lowest buying price", "Lowest price vendor","Lowest price date"]
 ORDERING_BORDERS = True            # thin borders around every cell of the ordering sheet (header and data)
 ORDERING_ONLY_ORDER_ROWS = True    # True = the ordering sheet lists only the SKUs whose Priority is in ORDERING_PRIORITIES
 ORDERING_PRIORITIES = ["Urgent - order", "Order"]   # add "Urgent - expedite incoming" etc. if you want them listed too
@@ -80,6 +81,7 @@ ORDERING_SHEET_NAME = "ordering sheet"
 # is an ALERT. Delete a line from the sheet when its stock arrives. Lines without a date are listed as DATE MISSING.
 OPEN_PO_ALERTS = True
 OPEN_PO_SHEET_NAME = "open PO alerts"
+MANUAL_INACTIVE_SHEET = "manual inactive"   # tab in the main output that shows what happened to each manual inactive line
 OPEN_PO_ALERT_DAYS = None
 FINAL_SALES_COLUMN_WIDTH = 18  # Fixed width for every WH/stores month column
 # Fixed leading columns of "final sheet": Status, Department, Brand, box upc, master upc,
@@ -680,7 +682,7 @@ def reverse_purchase_check(summary_rows, purchase_rows, pb_indexes):
     return checks, matched_indexes
 
 
-def purchase_activity(summary_rows, purchase_rows, reverse_matches=None, force_active=None):
+def purchase_activity(summary_rows, purchase_rows, reverse_matches=None, force_active=None, manual_inactive=None, manual_hits=None):
     """Any cleaned Bill item match is Active, irrespective of quantity.
 
     Purchase export has master UPC only; never invent a purchase box field.
@@ -728,7 +730,12 @@ def purchase_activity(summary_rows, purchase_rows, reverse_matches=None, force_a
         if method == "Not found" and reverse_matches and summary_index in reverse_matches:
             method, matched_value = "Purchase reverse lookup", qb_description
         status = "Inactive" if method == "Not found" else "Active"
-        if status == "Inactive" and force_active and summary_index in force_active:
+        if status == "Active" and manual_inactive and summary_index in manual_inactive:
+            # Listed in the manual inactive sheet: inactive even though it has Bills in the purchase window.
+            status, method, matched_value = "Manual inactive", "Manual inactive", manual_inactive[summary_index]
+            if manual_hits is not None:
+                manual_hits.add(summary_index)
+        if status in ("Inactive", "Manual inactive") and force_active and summary_index in force_active:
             # Re-ordered item: it has an open PO now, so it is planned like any other active SKU.
             status, method, matched_value = OPEN_PO_STATUS, "Open PO", force_active[summary_index]
         audit.append(base + [status, method, matched_value])
@@ -1542,7 +1549,7 @@ def arrange_tabs(target):
                 break
     source = [n for n in target.sheetnames if " raw" in n or n.startswith("current ")]
     clean = [n for n in target.sheetnames if n.endswith(" clean")]
-    work = ["open PO", "master price book", "inv with PB desc", "inv summarized", "inv status lookup",
+    work = ["open PO", MANUAL_INACTIVE_SHEET, "master price book", "inv with PB desc", "inv summarized", "inv status lookup",
             "active inventory", "final sheet", OPEN_PO_SHEET_NAME]
     other = [n for n in target.sheetnames if n not in source + clean + work]
     ordered = source + clean + other + [n for n in work if n in target.sheetnames]
@@ -1773,6 +1780,78 @@ def match_open_po(po_rows, summarized, active_rows, indexes, cfg=DEMAND):
         stats[status] += 1
         tab.append([r["box"], r["master"], r["brand"], r["description"], r["num"], qty, counted, matched, method, status])
     return tab, dict(incoming), reactivated, stats
+
+
+def manual_inactive_rows(path):
+    """Read the manual inactive list (SKUs you want inactive even if they have Bills in the purchase window).
+
+    Uses the sheet named "manual inactive" if the workbook has one, otherwise the first sheet that has a
+    DESCRIPTION header. Headers (any case/spacing): DESCRIPTION, B.UPC / BOX UPC (box), IN.UPC / MASTER UPC
+    (master), QB UPC (an extra master code), BRAND, DEP / DEPARTMENT. Other columns are ignored.
+    """
+    aliases = {
+        "desc": ("description", "discription", "productservice", "item", "itemname", "product", "productname"),
+        "box": ("bupc", "boxupc", "box", "boxcode"),
+        "master": ("inupc", "in", "masterupc", "upc", "inner", "innerupc", "productupc"),
+        "qb": ("qbupc",),
+        "brand": ("brand",),
+        "dep": ("dep", "department", "depart"),
+    }
+    workbook = load_workbook(path, read_only=True, data_only=True)
+    try:
+        sheets = sorted(workbook.worksheets, key=lambda s: s.title.strip().casefold() != "manual inactive")
+        for sheet in sheets:
+            header = None
+            for row_number, cells in enumerate(sheet.iter_rows(min_row=1, max_row=20, values_only=True), 1):
+                keys = {header_key(v): i for i, v in enumerate(cells) if v is not None}
+                pick = {name: next((keys[a] for a in names if a in keys), None) for name, names in aliases.items()}
+                if pick["desc"] is not None and (pick["box"] is not None or pick["master"] is not None or pick["qb"] is not None):
+                    header = (row_number, pick)
+                    break
+            if header is None:
+                continue
+            header_row, pick = header
+            rows, blanks = [], 0
+            for cells in sheet.iter_rows(min_row=header_row + 1, values_only=True):
+                get = lambda name: cells[pick[name]] if pick[name] is not None and pick[name] < len(cells) else None
+                if not any(v is not None and trim(v) for v in cells):
+                    blanks += 1
+                    if blanks >= 200:      # formatted-but-empty rows far below the data
+                        break
+                    continue
+                blanks = 0
+                master = join_codes([get("master"), get("qb")])
+                row = {"box": join_codes([get("box")]), "master": master,
+                       "brand": "" if trim(get("brand")).startswith("#") else trim(get("brand")),
+                       "dep": "" if trim(get("dep")).startswith("#") else trim(get("dep")), "description": clean_description(trim(get("desc")))}
+                if row["description"] or row["box"] != "-" or row["master"] != "-":
+                    rows.append(row)
+            return rows
+        raise ValueError("Manual inactive file: no sheet with a DESCRIPTION header and a UPC header (B.UPC / IN.UPC / QB UPC).")
+    finally:
+        workbook.close()
+
+
+def match_manual_inactive(rows, summarized, indexes):
+    """Match the manual inactive list to the WHOLE inventory with the same stages as the Open PO lookup.
+
+    Returns ({summary index: description from the list}, {row number: (index or None, method, outcome)}).
+    A row that matches several inventory SKUs sets ALL of them inactive (outcome 'ambiguous').
+    """
+    matcher = InventoryMatcher(summarized, indexes)
+    index_map, outcomes = {}, {}
+    for n, r in enumerate(rows):
+        i, method, found = matcher.resolve({"box": r["box"], "master": r["master"], "description": r["description"]})
+        if i is not None:
+            index_map.setdefault(i, r["description"] or summarized[i][2])
+            outcomes[n] = (i, method, "matched")
+        elif found:
+            for k in found:
+                index_map.setdefault(k, r["description"] or summarized[k][2])
+            outcomes[n] = (sorted(found), method, "ambiguous")
+        else:
+            outcomes[n] = (None, "", "not found")
+    return index_map, outcomes
 
 
 def planning_inputs(path, cfg=DEMAND):
@@ -2152,7 +2231,24 @@ def run(paths):
     purchase_checks, reverse_matches = reverse_purchase_check(summarized, purchase_clean_rows, indexes)
     print(f"  Purchase rows matched back to inventory: {sum(value != 0 for value in purchase_checks):,}", flush=True)
     print(f"  Purchase rows with lookup check = 0: {purchase_checks.count(0):,}", flush=True)
-    audit_rows, active_rows = purchase_activity(summarized, purchase_clean_rows, reverse_matches)
+    # Manual inactive list: SKUs forced to Inactive even when they have Bills in the purchase window.
+    manual_rows, manual_index, manual_out = None, {}, {}
+    manual_path = paths.get("manual_inactive", "")
+    if manual_path:
+        manual_path = Path(manual_path).expanduser().resolve()
+        if not manual_path.is_file():
+            raise FileNotFoundError(f"manual inactive file not found: {manual_path}")
+        if manual_path == output or manual_path in source_paths.values():
+            raise ValueError("Manual inactive path must differ from the workbook and the other inputs.")
+        print("\nReading manual inactive list and matching it to inventory...", flush=True)
+        manual_rows = manual_inactive_rows(manual_path)
+        manual_index, manual_out = match_manual_inactive(manual_rows, summarized, indexes)
+        print(f"  Manual inactive lines: {len(manual_rows):,} (matched to {len(manual_index):,} inventory SKUs)", flush=True)
+    else:
+        print("\nManual inactive: no file set.", flush=True)
+    manual_hits, reactivated = set(), {}
+    audit_rows, active_rows = purchase_activity(summarized, purchase_clean_rows, reverse_matches,
+                                                manual_inactive=manual_index, manual_hits=manual_hits)
     # Open PO: read fresh each run (a new file fully replaces the old one, nothing is stored in history).
     overrides = planning_inputs(paths.get("planning_inputs", ""), DEMAND)
     incoming_notes, po_incoming = {}, {}
@@ -2172,12 +2268,34 @@ def run(paths):
                      "Matched inventory description", "Lookup method", "Match status"], po_tab)
         if reactivated:
             # Inactive SKUs that were re-ordered join the active list (and so the final sheet) before sales/store mapping.
-            audit_rows, active_rows = purchase_activity(summarized, purchase_clean_rows, reverse_matches, force_active=reactivated)
+            audit_rows, active_rows = purchase_activity(summarized, purchase_clean_rows, reverse_matches, force_active=reactivated,
+                                                        manual_inactive=manual_index)
         print(f"  Open PO lines: {len(po_rows):,}", flush=True)
         for label, value in po_stats.items():
             print(f"  {label}: {value:,.0f}", flush=True)
     else:
         print("\nOpen PO: no file set, Incoming QTY stays at the default.", flush=True)
+    if manual_rows is not None:
+        tab, counts = [], Counter()
+        for n, r in enumerate(manual_rows):
+            i, method, outcome = manual_out[n]
+            if outcome == "matched":
+                label = ("Open PO - kept active (was inactive)" if i in reactivated
+                         else "Set inactive (script had it active)" if i in manual_hits
+                         else "Already inactive (no change)")
+                matched = summarized[i][2]
+            elif outcome == "ambiguous":
+                label = ("Set inactive - several SKUs matched, all set" if any(k in manual_hits for k in i)
+                         else "Already inactive - several SKUs matched (no change)")
+                matched = " | ".join(sorted(summarized[k][2] for k in i))
+            else:
+                label, matched = "Not in inventory (nothing to do)", ""
+            counts[label] += 1
+            tab.append([r["box"], r["master"], r["brand"], r["description"], r["dep"], label, matched, method])
+        write_clean(target.create_sheet(MANUAL_INACTIVE_SHEET),
+                    ["box upc", "master upc", "Brand", "description", "Department", "Result", "Matched inventory description", "Lookup method"], tab)
+        for label, value in counts.items():
+            print(f"  Manual inactive, {label}: {value:,}", flush=True)
     base_headers = ["box upc", "master upc", "description", "QTY", "PB description"]
     write_clean(target.create_sheet("inv status lookup"),
                 base_headers + ["Status", "Lookup method", "Matched UPC or description"], audit_rows)
