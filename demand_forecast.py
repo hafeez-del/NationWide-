@@ -32,11 +32,11 @@ CONFIG = {
 "stores_sales": r"E:\Downloads\Automate\nationwise\6 months pdi sales.xlsx",
 "stores_sales_append": r"E:\Downloads\Automate\nationwise\Stores_Sales_April_September.xlsx",  # blank "" = skip
 "open_po": r"E:\Downloads\Automate\nationwise\open PO's.xlsx",
-"manual_inactive": r"E:\Downloads\Automate\nationwise\manual inactive (1).xlsx",  # blank "" = skip
+"manual_inactive": r"E:\Downloads\Automate\nationwise\manual inactive.xlsx",  # blank "" = skip
 "planning_inputs": "",
 "history": "",
-"output": r"E:\Downloads\Automate\Warehouse_Monthly_Sales_new_O.xlsx",
-"output_ordering": r"E:\Downloads\Automate\Warehouse_Ordering_Sheet_O.xlsx"
+"output": r"E:\Downloads\Automate\Warehouse_Monthly_Sales_new_P.xlsx",
+"output_ordering": r"E:\Downloads\Automate\Warehouse_Ordering_Sheet_P.xlsx"
 }
 
 STORES_BASE_YEAR = 2026  # Year for month-only PDI rows (change for a new base year)
@@ -81,6 +81,11 @@ ORDERING_SHEET_NAME = "ordering sheet"
 # is an ALERT. Delete a line from the sheet when its stock arrives. Lines without a date are listed as DATE MISSING.
 OPEN_PO_ALERTS = True
 OPEN_PO_SHEET_NAME = "open PO alerts"
+# ---------------- PURCHASE HISTORY (tab "purchase history" in the main output) ----------------
+# Every Bill line of every active SKU: date, vendor, bill number, quantity and price, newest first inside each SKU.
+# Same 6 month purchase data (plus the current-purchase append) as the Last/Lowest buying price columns.
+PURCHASE_HISTORY = True
+PURCHASE_HISTORY_SHEET = "purchase history"
 MANUAL_INACTIVE_SHEET = "manual inactive"   # tab in the main output that shows what happened to each manual inactive line
 OPEN_PO_ALERT_DAYS = None
 FINAL_SALES_COLUMN_WIDTH = 18  # Fixed width for every WH/stores month column
@@ -1439,6 +1444,55 @@ def build_ordering_workbook(final, planning_cache, path):
     print(f"  Ordering workbook: {path}  (tab 1 '{final.title}', tab 2 '{ORDERING_SHEET_NAME}' with {len(rows):,} rows x {len(specs)} columns)", flush=True)
 
 
+def build_purchase_history(target, active_rows, purchase_rows, checks):
+    """One row per Bill line of every active SKU (lines matched to exactly one active SKU, same rule as buying prices).
+
+    Sorted by description, newest bill first. 'Price flag' marks the latest price and the lowest price of each SKU
+    (a rate of 0 or less is listed but never flagged).
+    """
+    info = {description_key(a[2]): (a[2], a[6] if len(a) > 6 else "", a[7] if len(a) > 7 else "") for a in active_rows}
+    groups, stats = defaultdict(list), Counter()
+    for position, (row, check) in enumerate(zip(purchase_rows, checks)):
+        if check == 0:
+            stats["not matched to an active SKU"] += 1
+            continue
+        if " | " in str(check):
+            stats["matched several SKUs (left out)"] += 1
+            continue
+        key = description_key(check)
+        if key not in info:
+            continue
+        groups[key].append((row[0] or datetime.min, position, row))
+        stats["listed"] += 1
+    out = []
+    for key, lines in groups.items():
+        lines.sort(key=lambda x: (x[0], x[1]), reverse=True)           # newest first
+        usable = [x for x in lines if isinstance(x[2][7], (int, float)) and math.isfinite(float(x[2][7])) and x[2][7] > 0]
+        latest = usable[0][1] if usable else None
+        lowest = min(usable, key=lambda x: (float(x[2][7]), -x[0].toordinal(), -x[1]))[1] if usable else None
+        desc, dept, brand = info[key]
+        for stamp, position, r in lines:
+            rate = r[7] if len(r) > 7 else None
+            flags = [f for f, mark in (("Latest price", latest), ("Lowest price", lowest)) if mark == position]
+            out.append([dept, brand, desc, stamp if stamp != datetime.min else "", r[6] if len(r) > 6 else "", r[2],
+                        r[5], rate, round(r[5] * rate, 2) if isinstance(r[5], (int, float)) and isinstance(rate, (int, float)) else "",
+                        " + ".join(flags)])
+    out.sort(key=lambda r: (r[2].casefold(),))                           # stable: newest-first order kept inside a SKU
+    sheet = target.create_sheet(PURCHASE_HISTORY_SHEET)
+    write_clean(sheet, ["Department", "Brand", "description", "Bill date", "Vendor", "Num", "QTY", "Price", "Line total", "Price flag"], out)
+    for col, width in (("A", 22), ("B", 22), ("E", 30), ("J", 24)):
+        sheet.column_dimensions[col].width = width
+    for row in sheet.iter_rows(min_row=2, min_col=8, max_col=9):
+        for c in row:
+            c.number_format = "#,##0.00"
+    fill = PatternFill("solid", fgColor="E2EFDA")
+    for row in sheet.iter_rows(min_row=2, min_col=10, max_col=10):
+        if row[0].value:
+            for c in sheet[row[0].row]:
+                c.fill = fill
+    return len(groups), stats
+
+
 def late_open_pos(po_rows, tab, as_of, alert_days):
     """{description_key of the matched SKU: oldest days open} for open PO lines dated alert_days or more days ago."""
     late = {}
@@ -1550,7 +1604,7 @@ def arrange_tabs(target):
     source = [n for n in target.sheetnames if " raw" in n or n.startswith("current ")]
     clean = [n for n in target.sheetnames if n.endswith(" clean")]
     work = ["open PO", MANUAL_INACTIVE_SHEET, "master price book", "inv with PB desc", "inv summarized", "inv status lookup",
-            "active inventory", "final sheet", OPEN_PO_SHEET_NAME]
+            "active inventory", "final sheet", PURCHASE_HISTORY_SHEET, OPEN_PO_SHEET_NAME]
     other = [n for n in target.sheetnames if n not in source + clean + work]
     ordered = source + clean + other + [n for n in work if n in target.sheetnames]
     for desired, name in enumerate(ordered):
@@ -1741,7 +1795,7 @@ class InventoryMatcher:
         return None, method, found
 
 
-def match_open_po(po_rows, summarized, active_rows, indexes, cfg=DEMAND):
+def match_open_po(po_rows, summarized, active_rows, indexes, cfg=DEMAND, manual=None):
     """Open PO lines -> active inventory first, then the rest of inventory (inactive SKUs that were re-ordered).
 
     Returns (tab rows, {description_key: units}, {summary index: PO description} for reactivated SKUs, stats).
@@ -1767,8 +1821,13 @@ def match_open_po(po_rows, summarized, active_rows, indexes, cfg=DEMAND):
                 index, method, found = inactive_matcher.resolve(r)
                 if index is not None:
                     row = summarized[inactive_ix[index]]
-                    matched = row[2]; status = "Counted - reactivated (was inactive)"
-                    reactivated[inactive_ix[index]] = r["description"]
+                    matched = row[2]
+                    if manual and inactive_ix[index] in manual:
+                        # On the manual inactive list: stays inactive, so this PO line is not counted.
+                        status = "Manual inactive (not counted)"
+                    else:
+                        status = "Counted - reactivated (was inactive)"
+                        reactivated[inactive_ix[index]] = r["description"]
                 elif found:
                     matched = " | ".join(sorted(inactive_matcher.rows[i][2] for i in found)); status = "Ambiguous match (not counted)"
                 else:
@@ -2262,7 +2321,7 @@ def run(paths):
             raise ValueError("Open PO path must differ from the workbook and the other inputs.")
         print("\nReading open PO and matching it to inventory...", flush=True)
         po_rows = open_po_rows(po_path)
-        po_tab, po_incoming, reactivated, po_stats = match_open_po(po_rows, summarized, active_rows, indexes, DEMAND)
+        po_tab, po_incoming, reactivated, po_stats = match_open_po(po_rows, summarized, active_rows, indexes, DEMAND, manual_index)
         write_clean(target.create_sheet("open PO"),
                     ["box upc", "master upc", "Brand", "description", "PO num", "Open QTY", "Counted QTY (x factor)",
                      "Matched inventory description", "Lookup method", "Match status"], po_tab)
@@ -2305,6 +2364,9 @@ def run(paths):
     print(f"  Buying prices found for {len(costs):,} active SKUs", flush=True)
     for label, value in cost_stats.items():
         print(f"  Purchase price lookup, {label}: {value:,}", flush=True)
+    if PURCHASE_HISTORY:
+        n_skus, ph_stats = build_purchase_history(target, active_rows, purchase_clean_rows, purchase_active_checks)
+        print(f"  Purchase history: {ph_stats['listed']:,} bill lines for {n_skus:,} active SKUs", flush=True)
     add_lookup_columns(target["purchase clean"], purchase_checks, purchase_active_checks)
     # Sales rows have an extra Store name column. Pass the six item/date fields
     # to the same exact matching engine; all original sales rows are retained.
