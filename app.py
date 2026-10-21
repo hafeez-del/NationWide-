@@ -277,7 +277,7 @@ try:
     # ── Hero Banner ──
     st.markdown("""
     <div class="hero-banner">
-        <h1>📦 Nation Wide Wholesale</h1>
+        <h1>📦 Nation Wide Automated Ordering</h1>
         <p>Upload your files, adjust settings, press Run — download the output.</p>
     </div>
     """, unsafe_allow_html=True)
