@@ -309,6 +309,8 @@ try:
             f_stores_append = st.file_uploader("Current Stores Sales (optional)", type=["xlsx"], key="df_stores_app")
             f_open_po = st.file_uploader("Open PO's (optional)", type=["xlsx"], key="df_po")
             f_planning = st.file_uploader("Planning Inputs (optional)", type=["xlsx"], key="df_plan")
+            f_manual_inactive = st.file_uploader("Manual Inactive List (optional)", type=["xlsx"], key="df_manual_inactive",
+                                                 help="SKUs listed here are forced to Inactive even if they have purchases in the window.")
 
         print("APP: tab1 uploaders done", flush=True)
 
@@ -397,6 +399,7 @@ try:
                         "sales_append": save_upload(f_sal_append, tmp, "sales_append.xlsx"),
                         "open_po": save_upload(f_open_po, tmp, "open_po.xlsx"),
                         "planning_inputs": save_upload(f_planning, tmp, "planning_inputs.xlsx"),
+                        "manual_inactive": save_upload(f_manual_inactive, tmp, "manual_inactive.xlsx"),
                         "output": os.path.join(tmp, "Warehouse_Monthly_Sales.xlsx"),
                         "output_ordering": os.path.join(tmp, "Warehouse_Ordering_Sheet.xlsx"),
                         "history": os.path.join(tmp, "history.json"),
