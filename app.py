@@ -10,6 +10,8 @@ import io
 import zipfile
 import shutil
 import traceback
+import time
+import threading
 from pathlib import Path
 from contextlib import redirect_stdout, redirect_stderr
 from datetime import datetime, timezone, timedelta
@@ -214,17 +216,89 @@ def save_upload(uploaded_file, directory, name=None):
 
 
 class TeeWriter:
-    """Write to both a buffer AND stderr (which goes to Streamlit Cloud server logs)."""
-    def __init__(self, buf, original):
+    """Write to a buffer, to stderr (Streamlit Cloud server logs) AND, live, to a box on the page
+    so every user sees the progress while a run is going (not only the app owner)."""
+    def __init__(self, buf, original, placeholder=None, tail_lines=30, interval=0.8):
         self.buf = buf
         self.original = original
+        self.placeholder = placeholder
+        self.tail_lines = tail_lines
+        self.interval = interval
+        self._last = 0.0
+        self._busy = False
+
+    def _refresh(self, force=False):
+        if self.placeholder is None or self._busy:
+            return
+        now = time.time()
+        if not force and now - self._last < self.interval:
+            return
+        self._busy = True
+        try:
+            lines = self.buf.getvalue().splitlines()[-self.tail_lines:]
+            self.placeholder.code("\n".join(lines) or "Starting...", language="text")
+            self._last = now
+        except Exception:
+            self.placeholder = None
+        finally:
+            self._busy = False
+
     def write(self, s):
         self.buf.write(s)
         self.original.write(s)
+        self._refresh()
         return len(s)
+
     def flush(self):
         self.buf.flush()
         self.original.flush()
+        self._refresh()
+
+    def finish(self, clear=True):
+        """Show the last lines once more; optionally remove the live box (the full log is shown afterwards)."""
+        if self.placeholder is None:
+            return
+        if clear:
+            try:
+                self.placeholder.empty()
+            except Exception:
+                pass
+        else:
+            self._refresh(force=True)
+
+
+@st.cache_resource
+def _activity_store():
+    """One store shared by every visitor/session of the running app (lost when the app restarts)."""
+    return {"lock": threading.Lock(), "entries": []}
+
+
+PKT = timezone(timedelta(hours=5))
+MAX_ACTIVITY = 60          # keep the latest runs only
+MAX_LOG_CHARS = 30000      # per-run log kept in memory (the tail is kept)
+
+
+def log_activity(tool, user, status, seconds, log_text="", detail=""):
+    """Record one run so everybody can see it in the Activity Log tab."""
+    try:
+        store = _activity_store()
+        text = log_text or ""
+        if len(text) > MAX_LOG_CHARS:
+            text = "... (earlier lines cut) ...\n" + text[-MAX_LOG_CHARS:]
+        entry = {
+            "time": datetime.now(PKT).strftime("%d %b %Y, %I:%M:%S %p"),
+            "tool": tool,
+            "user": (user or "").strip() or "Unknown",
+            "status": status,
+            "seconds": round(seconds, 1),
+            "detail": detail,
+            "log": text,
+        }
+        with store["lock"]:
+            store["entries"].insert(0, entry)
+            del store["entries"][MAX_ACTIVITY:]
+    except Exception as _e:
+        print(f"APP: could not write activity log: {_e}", flush=True)
 
 
 def zip_folder(folder_path):
@@ -283,7 +357,13 @@ try:
     """, unsafe_allow_html=True)
     print("APP: title done", flush=True)
 
-    tab1, tab2, tab3 = st.tabs(["📊 Demand Forecast", "📋 PO Generator", "🏪 PDI Sales Sorter"])
+    user_name = st.text_input(
+        "Your name (shown in the Activity Log)",
+        key="user_name",
+        placeholder="e.g. Ali",
+    )
+
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Demand Forecast", "📋 PO Generator", "🏪 PDI Sales Sorter", "🗂️ Activity Log"])
     print("APP: tabs created", flush=True)
 
     # ═══════════════════════ TAB 1: DEMAND FORECAST ═══════════════════════
@@ -387,6 +467,8 @@ try:
             st.session_state.pop("df_result", None)
             with st.spinner("Processing... this may take a few minutes, please wait..."):
                 tmp = tempfile.mkdtemp(prefix="nw_df_")
+                _t0 = time.time()
+                log_buf = None
                 try:
                     paths = {
                         "inventory": save_upload(f_inventory, tmp, "inventory.xlsx"),
@@ -448,11 +530,13 @@ try:
                     df.ORDERING_PRIORITIES = list(selected_priorities)
 
                     log_buf = io.StringIO()
-                    tee_out = TeeWriter(log_buf, sys.__stderr__)
+                    live_box = st.empty()
+                    tee_out = TeeWriter(log_buf, sys.__stderr__, live_box)
 
                     print("APP: running df.run(paths)...", flush=True)
                     with redirect_stdout(tee_out), redirect_stderr(tee_out):
                         df.run(paths)
+                    tee_out.finish(clear=True)
 
                     log_text = log_buf.getvalue()
                     print("APP: df.run() completed!", flush=True)
@@ -471,11 +555,18 @@ try:
                         if detail_path and os.path.isfile(detail_path):
                             zf.write(detail_path, "Warehouse_Monthly_Sales_Detail_Sheets.xlsx")
                     st.session_state["df_result"] = {"zip": zip_buf.getvalue(), "log": log_text}
+                    log_activity("Demand Forecast", user_name, "Success", time.time() - _t0, log_text,
+                                 f"Inventory: {f_inventory.name}")
 
                 except Exception as e:
                     print(f"APP: ERROR in demand forecast: {e}", flush=True)
                     print(traceback.format_exc(), flush=True)
+                    log_activity("Demand Forecast", user_name, "Failed", time.time() - _t0,
+                                 (log_buf.getvalue() if log_buf else "") + "\n" + traceback.format_exc(), str(e))
                     st.error(f"❌ Error: {e}")
+                    if log_buf is not None:
+                        with st.expander("Processing log up to the error", expanded=True):
+                            st.code("\n".join(log_buf.getvalue().splitlines()[-60:]), language="text")
                     with st.expander("Full Error Details"):
                         st.code(traceback.format_exc(), language="text")
                 finally:
@@ -530,6 +621,8 @@ try:
         if st.button("▶️  Generate POs", type="primary", disabled=not f_ordering_wb, key="po_run"):
             with st.spinner("Generating POs..."):
                 tmp = tempfile.mkdtemp(prefix="nw_po_")
+                _t0 = time.time()
+                log_buf = None
                 try:
                     wb_path = save_upload(f_ordering_wb, tmp, "ordering_workbook.xlsx")
                     output_folder = os.path.join(tmp, "PO_output")
@@ -570,6 +663,8 @@ try:
                             print(f"WARNING: {len(skipped)} marked row(s) could not be ordered", flush=True)
 
                     log_text = log_buf.getvalue()
+                    log_activity("PO Generator", user_name, "Success", time.time() - _t0, log_text,
+                                 f"{len(orders)} PO(s), {len(lines)} lines")
 
                     st.success(f"✅ {len(orders)} PO(s) generated — {len(lines)} total lines!")
 
@@ -603,6 +698,8 @@ try:
                 except Exception as e:
                     print(f"APP: ERROR in PO generator: {e}", flush=True)
                     print(traceback.format_exc(), flush=True)
+                    log_activity("PO Generator", user_name, "Failed", time.time() - _t0,
+                                 (log_buf.getvalue() if log_buf else "") + "\n" + traceback.format_exc(), str(e))
                     st.error(f"❌ Error: {e}")
                     with st.expander("Full Error Details"):
                         st.code(traceback.format_exc(), language="text")
@@ -668,6 +765,8 @@ try:
 
             with st.spinner("Processing PDI sales files..."):
                 tmp = tempfile.mkdtemp(prefix="nw_pdi_")
+                _t0 = time.time()
+                log_buf = None
                 try:
                     # Save uploaded files and build input_files dict (label -> path)
                     input_map = {}
@@ -698,7 +797,8 @@ try:
 
                     output_dir = os.path.join(tmp, "pdi_output")
                     log_buf = io.StringIO()
-                    tee_out = TeeWriter(log_buf, sys.__stderr__)
+                    live_box = st.empty()
+                    tee_out = TeeWriter(log_buf, sys.__stderr__, live_box)
 
                     print("APP: running pdi_sales_sorter.run()...", flush=True)
                     with redirect_stdout(tee_out), redirect_stderr(tee_out):
@@ -708,9 +808,12 @@ try:
                             department_contains=dept_keyword.strip(),
                             save_detail=save_detail,
                         )
+                    tee_out.finish(clear=True)
 
                     log_text = log_buf.getvalue()
                     print("APP: pdi_sales_sorter.run() completed!", flush=True)
+                    log_activity("PDI Sales Sorter", user_name, "Success", time.time() - _t0, log_text,
+                                 f"{len(input_map)} file(s), filter: {dept_keyword.strip()}")
                     st.success(f"✅ PDI Sales Sorter complete — {len(input_map)} file(s) processed!")
 
                     with st.expander("📋 Processing Log", expanded=False):
@@ -757,6 +860,8 @@ try:
                 except Exception as e:
                     print(f"APP: ERROR in PDI sales sorter: {e}", flush=True)
                     print(traceback.format_exc(), flush=True)
+                    log_activity("PDI Sales Sorter", user_name, "Failed", time.time() - _t0,
+                                 (log_buf.getvalue() if log_buf else "") + "\n" + traceback.format_exc(), str(e))
                     st.error(f"❌ Error: {e}")
                     with st.expander("Full Error Details"):
                         st.code(traceback.format_exc(), language="text")
@@ -764,6 +869,30 @@ try:
                     shutil.rmtree(tmp, ignore_errors=True)
 
     print("APP: tab3 complete", flush=True)
+
+    # ═══════════════════════ TAB 4: ACTIVITY LOG ═══════════════════════
+    with tab4:
+        st.markdown(
+            '<div class="section-card"><h3>🗂️ Activity Log</h3>'
+            'Every run by every user (latest first): who ran what, when, whether it worked, and the full processing log. '
+            'Open a row to read its log. The list resets when the app restarts.</div>',
+            unsafe_allow_html=True,
+        )
+        st.button("🔄 Refresh", key="act_refresh")
+        _store = _activity_store()
+        with _store["lock"]:
+            _entries = list(_store["entries"])
+        if not _entries:
+            st.markdown('<div class="info-callout">No runs yet since the app last started.</div>', unsafe_allow_html=True)
+        for _i, _e in enumerate(_entries):
+            _icon = "✅" if _e["status"] == "Success" else "❌"
+            _title = f'{_icon} {_e["time"]} — {_e["tool"]} — {_e["user"]} ({_e["seconds"]}s)'
+            with st.expander(_title, expanded=False):
+                if _e["detail"]:
+                    st.caption(_e["detail"])
+                st.code(_e["log"] or "(no log)", language="text")
+
+    print("APP: tab4 complete", flush=True)
 
     # ─────── Footer ───────
     st.markdown(
