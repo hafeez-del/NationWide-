@@ -980,6 +980,13 @@ def store_month(value, default_year, context):
             return date(default_year, datetime.strptime(label, pattern).month, 1)
         except ValueError:
             pass
+    # Free text such as "October Sale 2026." -> find a month name (and a year, if present) inside it.
+    found = re.search(r"\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|"
+                      r"sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b", label, re.I)
+    if found:
+        month_number = datetime.strptime(found.group(1)[:3].title(), "%b").month
+        year = re.search(r"\b(20\d\d)\b", label)
+        return date(int(year.group(1)) if year else default_year, month_number, 1)
     raise ValueError(f"Invalid store Month at {context}: {value!r}")
 
 
@@ -2391,6 +2398,28 @@ def run(paths):
     print(f"  Inactive: {len(audit_rows) - len(active_rows):,}", flush=True)
     print("\nPreparing store sales and cross checks...", flush=True)
     store_values = add_stores_reports(paths, target, summarized, active_rows, indexes, history, as_of, sales_headers, monthly_rows)
+    # Move the two largest sheets (sales clean, stores sales clean) into a separate write-only workbook NOW,
+    # before the planning / formatting steps, so they are not held in memory (or restyled) any longer.
+    large_sheet_names = [n for n in target.sheetnames if n in ("sales clean", "stores sales clean")]
+    if large_sheet_names:
+        detail_path = output.with_name(output.stem + "_Detail_Sheets.xlsx")
+        print(f"\nStreaming {len(large_sheet_names)} large sheet(s) to detail file...", flush=True)
+        wb_detail = Workbook(write_only=True)
+        for sheet_name in large_sheet_names:
+            ws_src = target[sheet_name]
+            ws_dst = wb_detail.create_sheet(sheet_name)
+            for row in ws_src.iter_rows(values_only=True):
+                ws_dst.append(list(row))
+            del target[sheet_name]
+            del ws_src
+            print(f"  '{sheet_name}' streamed OK", flush=True)
+        gc.collect()
+        wb_detail.save(str(detail_path))
+        wb_detail.close()
+        del wb_detail
+        gc.collect()
+        paths["output_detail"] = str(detail_path)
+        print(f"  Detail sheets saved: {detail_path}", flush=True)
     alert_days = int(OPEN_PO_ALERT_DAYS if OPEN_PO_ALERT_DAYS else DEMAND["lead_time"])
     late_note = late_open_pos(po_rows, po_tab, as_of, alert_days) if po_rows is not None else {}
     for key, qty in po_incoming.items():
@@ -2427,27 +2456,6 @@ def run(paths):
     del active_rows, summarized, audit_rows, proper_inventory, mapped
     del sales_active_checks, purchase_checks, purchase_active_checks, sales_summary_checks
     gc.collect()
-    # Stream the two largest sheets (sales clean, stores sales clean) into a separate write-only
-    # workbook so peak memory stays flat, then drop them from the main workbook.
-    large_sheet_names = [n for n in target.sheetnames if n in ("sales clean", "stores sales clean")]
-    detail_path = output.with_name(output.stem + "_Detail_Sheets.xlsx")
-    if large_sheet_names:
-        print(f"\nStreaming {len(large_sheet_names)} large sheet(s) to detail file...", flush=True)
-        wb_detail = Workbook(write_only=True)
-        for sheet_name in large_sheet_names:
-            ws_src = target[sheet_name]
-            ws_dst = wb_detail.create_sheet(sheet_name)
-            for row in ws_src.iter_rows(values_only=True):
-                ws_dst.append(list(row))
-            del target[sheet_name]
-            print(f"  '{sheet_name}' streamed OK", flush=True)
-        gc.collect()
-        wb_detail.save(str(detail_path))
-        wb_detail.close()
-        del wb_detail
-        gc.collect()
-        paths["output_detail"] = str(detail_path)
-        print(f"  Detail sheets saved: {detail_path}", flush=True)
     # Save atomically so a failed save does not leave a half-written deliverable.
     temporary = output.with_name(output.stem + ".tmp.xlsx")
     print(f"\nSaving: {output}", flush=True)
