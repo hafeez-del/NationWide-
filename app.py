@@ -363,7 +363,9 @@ try:
         placeholder="e.g. Ali",
     )
 
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Demand Forecast", "📋 PO Generator", "🏪 PDI Sales Sorter", "🗂️ Activity Log"])
+    tab1, tab2, tab3, tab_qb, tab4 = st.tabs(
+        ["📊 Demand Forecast", "📋 PO Generator", "🏪 PDI Sales Sorter", "🧾 QB Sales Merger", "🗂️ Activity Log"]
+    )
     print("APP: tabs created", flush=True)
 
     # ═══════════════════════ TAB 1: DEMAND FORECAST ═══════════════════════
@@ -870,7 +872,116 @@ try:
 
     print("APP: tab3 complete", flush=True)
 
-    # ═══════════════════════ TAB 4: ACTIVITY LOG ═══════════════════════
+    # ═══════════════════════ TAB: QB SALES MERGER ═══════════════════════
+    with tab_qb:
+        st.markdown(
+            '<div class="section-card"><h3>🧾 QB Sales Merger</h3>'
+            'Upload the monthly QuickBooks <strong>Sales by Customer Detail</strong> files (.xlsx). '
+            'They are merged into one workbook: customers A-Z, rows sorted by date, '
+            'running balance and totals recalculated.</div>',
+            unsafe_allow_html=True,
+        )
+
+        qb_uploads = st.file_uploader(
+            "QB Monthly Sales Files (upload all the months, any number of .xlsx files)",
+            type=["xlsx"],
+            accept_multiple_files=True,
+            key="qb_files",
+        )
+
+        if qb_uploads:
+            st.markdown(
+                f'<div class="metric-row">'
+                f'<span class="metric-chip green">✓ {len(qb_uploads)} file(s) uploaded</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                '<div class="info-callout">📁 Upload at least one QB monthly file to activate the Run button.</div>',
+                unsafe_allow_html=True,
+            )
+
+        st.markdown("")  # spacing
+        if st.button("▶️  Merge Sales Files", type="primary", disabled=not qb_uploads, key="qb_run"):
+            st.session_state.pop("qb_result", None)
+            with st.spinner("Merging QB sales files..."):
+                tmp = tempfile.mkdtemp(prefix="nw_qb_")
+                _t0 = time.time()
+                log_buf = None
+                try:
+                    in_dir = os.path.join(tmp, "in")
+                    os.makedirs(in_dir, exist_ok=True)
+                    saved, used = [], set()
+                    for uploaded in qb_uploads:
+                        name = Path(uploaded.name).name
+                        base, ext = os.path.splitext(name)
+                        n = 2
+                        while name.lower() in used:
+                            name = f"{base}_{n}{ext}"
+                            n += 1
+                        used.add(name.lower())
+                        saved.append(save_upload(uploaded, in_dir, name))
+
+                    if "qb_sales_merger" in sys.modules:
+                        del sys.modules["qb_sales_merger"]
+                    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+                    import qb_sales_merger as qb
+
+                    log_buf = io.StringIO()
+                    live_box = st.empty()
+                    tee_out = TeeWriter(log_buf, sys.__stderr__, live_box)
+                    with redirect_stdout(tee_out), redirect_stderr(tee_out):
+                        result = qb.run(sorted(saved), os.path.join(tmp, "out"))
+                    tee_out.finish(clear=True)
+
+                    log_text = log_buf.getvalue()
+                    with open(result["output"], "rb") as f:
+                        st.session_state["qb_result"] = {
+                            "data": f.read(),
+                            "name": os.path.basename(result["output"]),
+                            "log": log_text,
+                            "customers": result["customers"],
+                            "rows": result["rows"],
+                            "skipped": result["skipped"],
+                        }
+                    log_activity("QB Sales Merger", user_name, "Success", time.time() - _t0, log_text,
+                                 f"{len(saved)} file(s), {result['customers']} customers, {result['rows']} rows")
+
+                except Exception as e:
+                    print(f"APP: ERROR in QB sales merger: {e}", flush=True)
+                    print(traceback.format_exc(), flush=True)
+                    log_activity("QB Sales Merger", user_name, "Failed", time.time() - _t0,
+                                 (log_buf.getvalue() if log_buf else "") + "\n" + traceback.format_exc(), str(e))
+                    st.error(f"❌ Error: {e}")
+                    if log_buf is not None:
+                        with st.expander("Processing log up to the error", expanded=True):
+                            st.code("\n".join(log_buf.getvalue().splitlines()[-60:]), language="text")
+                    with st.expander("Full Error Details"):
+                        st.code(traceback.format_exc(), language="text")
+                finally:
+                    shutil.rmtree(tmp, ignore_errors=True)
+
+        qb_result = st.session_state.get("qb_result")
+        if qb_result:
+            st.success(f"✅ Merged — {qb_result['customers']} customers, {qb_result['rows']} rows!")
+            if qb_result["skipped"]:
+                st.warning("Skipped (could not be read): " + ", ".join(qb_result["skipped"]))
+            with st.expander("📋 Processing Log", expanded=False):
+                st.code(qb_result["log"], language="text")
+            st.markdown("##### ⬇️ Download Output")
+            st.download_button(
+                "📥 Download Merged Sales Workbook",
+                data=qb_result["data"],
+                file_name=qb_result["name"],
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+                key="qb_download",
+            )
+
+    print("APP: qb tab complete", flush=True)
+
+    # ═══════════════════════ TAB 5: ACTIVITY LOG ═══════════════════════
     with tab4:
         st.markdown(
             '<div class="section-card"><h3>🗂️ Activity Log</h3>'
@@ -898,7 +1009,7 @@ try:
     st.markdown(
         '<div class="custom-footer">'
         '<span>Nation Wide Wholesale</span> — Automation Tool &nbsp;|&nbsp; '
-        'Demand Forecast &bull; PO Generator &bull; PDI Sales Sorter'
+        'Demand Forecast &bull; PO Generator &bull; PDI Sales Sorter &bull; QB Sales Merger'
         '</div>',
         unsafe_allow_html=True,
     )
