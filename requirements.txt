@@ -2,3 +2,4 @@ streamlit
 openpyxl
 reportlab
 xlsxwriter
+supabase
