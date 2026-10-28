@@ -25,18 +25,18 @@ from openpyxl.utils import get_column_letter
 CONFIG = {
     "inventory": r"E:\Downloads\Automate\nationwise\invenotry.xlsx",
 "purchase": r"E:\Downloads\Automate\nationwise\6 month purchase.xlsx",
-"sales": r"E:\Downloads\Automate\nationwise\6 month sales.xlsx",
+"sales": r"E:\Downloads\Automate\nationwise\6 month sales new.xlsx",
 "pricebook": r"E:\Downloads\Automate\nationwise\master price book.xlsx",
 "purchase_append": r"E:\Downloads\Automate\nationwise\crrnt purchase warehouse.xlsx",
 "sales_append": r"E:\Downloads\Automate\nationwise\crrnt sales warehouse.xlsx",
 "stores_sales": r"E:\Downloads\Automate\nationwise\6 months pdi sales.xlsx",
 "stores_sales_append": r"E:\Downloads\Automate\nationwise\Stores_Sales_April_September.xlsx",  # blank "" = skip
 "open_po": r"E:\Downloads\Automate\nationwise\open PO's.xlsx",
-"manual_inactive": r"E:\Downloads\Automate\nationwise\manual inactive.xlsx",  # blank "" = skip
+"manual_inactive": r"E:\Downloads\Automate\nationwise\manual inactive (1).xlsx",  # blank "" = skip
 "planning_inputs": "",
 "history": "",
-"output": r"E:\Downloads\Automate\Warehouse_Monthly_Sales_new_P.xlsx",
-"output_ordering": r"E:\Downloads\Automate\Warehouse_Ordering_Sheet_P.xlsx"
+"output": r"E:\Downloads\Automate\Warehouse_Monthly_Sales_new_28.xlsx",
+"output_ordering": r"E:\Downloads\Automate\Warehouse_Ordering_Sheet_28.xlsx"
 }
 
 STORES_BASE_YEAR = 2026  # Year for month-only PDI rows (change for a new base year)
@@ -68,9 +68,12 @@ INCLUDE_RAW_TABS = False
 #   "Adjustment"      = blank green input cell: type the COMPLETE quantity you want to order (e.g. suggested 10,
 #                       you want 15 -> type 15). Leave it blank to keep the suggestion; type 0 to order nothing.
 #   "Final order QTY" = formula: the Adjustment if you typed one, otherwise the Suggested order QTY
+#   "PO vendor" / "PO price" = blank green input cells for a vendor that is not in the Last/Lowest vendor columns
+#                       (a new vendor). Type the vendor name and the price; the PO generator uses them instead.
 ORDERING_COLUMNS = ["Department", "Brand", "box upc", "master upc", "description", "PB description",
                     "Pack of", "QTY", "Incoming QTY", "Suggested order QTY", "Adjustment", "Final order QTY", "Priority",
-                    "Last buying price", "Last vendor", "Lowest buying price", "Lowest price vendor","Lowest price date"]
+                    "Last buying price", "Last vendor", "Lowest buying price", "Lowest price vendor","Lowest price date",
+                    "PO vendor", "PO price"]
 ORDERING_BORDERS = True            # thin borders around every cell of the ordering sheet (header and data)
 ORDERING_ONLY_ORDER_ROWS = True    # True = the ordering sheet lists only the SKUs whose Priority is in ORDERING_PRIORITIES
 ORDERING_PRIORITIES = ["Urgent - order", "Order"]   # add "Urgent - expedite incoming" etc. if you want them listed too
@@ -1354,7 +1357,7 @@ def build_ordering_workbook(final, planning_cache, path):
     specs = []
     for item in ORDERING_COLUMNS:
         source, label = (item, item) if isinstance(item, str) else (item[0], item[1])
-        if source in ("Adjustment", "Final order QTY"):
+        if source in ("Adjustment", "Final order QTY", "PO vendor", "PO price"):
             specs.append((source, label, None))
             continue
         if source not in headers:
@@ -1389,6 +1392,10 @@ def build_ordering_workbook(final, planning_cache, path):
         cell = orders.cell(1, position, label)
         if source == "Adjustment":
             cell.comment = _Comment("Type the COMPLETE quantity you want to order (e.g. suggested 10, you want 15: type 15). Blank = keep the suggestion, 0 = do not order.", "Planning")
+        if source == "PO vendor":
+            cell.comment = _Comment("Optional. Type a vendor here (e.g. a NEW vendor) and the PO generator orders from this vendor instead of Last/Lowest vendor. Blank = normal vendor.", "Planning")
+        if source == "PO price":
+            cell.comment = _Comment("Optional. Price per unit from the new vendor. Blank = the Last/Lowest buying price is used.", "Planning")
         if source == "Final order QTY":
             cell.comment = _Comment("= Adjustment if you typed one, otherwise Suggested order QTY.", "Planning")
         cell.fill, cell.font = header_fill, Font(bold=True, color="FFFFFF")
@@ -1409,9 +1416,10 @@ def build_ordering_workbook(final, planning_cache, path):
         raise ValueError("ORDERING_COLUMNS: 'Final order QTY' needs both 'Suggested order QTY' and 'Adjustment' in the list.")
     for out_row, r in enumerate(rows, 2):
         for position, (source, label, column) in enumerate(specs, 1):
-            if source == "Adjustment":
+            if source in ("Adjustment", "PO vendor", "PO price"):
                 cell = orders.cell(out_row, position)
-                cell.fill, cell.font, cell.alignment, cell.number_format = green, blue, center, "0.##"
+                cell.fill, cell.font, cell.alignment = green, blue, center
+                cell.number_format = "0.##" if source == "Adjustment" else ("0.00##" if source == "PO price" else "@")
                 if edge_border:
                     cell.border = edge_border
                 continue
