@@ -11,8 +11,8 @@ from openpyxl.utils import get_column_letter
 
 # ============================== SETTINGS (change these) ==============================
 CONFIG = {
-    "ordering_workbook": r"E:\Downloads\Automate\Warehouse_Ordering_Sheet_J.xlsx",
-    "output_folder": r"E:\Downloads\Automate\PO",
+    "ordering_workbook": r"E:\Downloads\Automate\Warehouse_Ordering_Sheet_28.xlsx",
+    "output_folder": r"E:\Downloads\Automate\PO_new2",
 }
 
 PO_PRICE_BASIS = "last"          # which VENDOR to use (no prices are printed any more):
@@ -32,6 +32,7 @@ COLUMNS = {
     "lowest_vendor": "Lowest price vendor",
     "box_upc": "box upc",        # optional columns, only shown when SHOW_UPC_* is True
     "master_upc": "master upc",
+    "vendor_override": "PO vendor",   # optional: type a NEW vendor here -> used instead of Last/Lowest vendor
 }
 
 # Company details printed at the top of every PO PDF. Empty lines are skipped.
@@ -113,6 +114,7 @@ def read_marked_lines(path):
         c_desc, c_qty = column(COLUMNS["description"]), column(COLUMNS["qty"])
         c_vendor = column(COLUMNS[vendor_key])  # the price basis only decides which vendor column is used
         c_box, c_master = column(COLUMNS["box_upc"], False), column(COLUMNS["master_upc"], False)
+        c_vover = column(COLUMNS["vendor_override"], False)
         mark = trim(PO_MARK).casefold()
         lines, skipped, marked, uncalculated = [], [], 0, 0
         for number, row in enumerate(rows, 2):
@@ -123,12 +125,14 @@ def read_marked_lines(path):
             item = {"row": number, "description": trim(get(c_desc)), "qty": to_number(get(c_qty)),
                     "vendor": trim(get(c_vendor)),
                     "box": trim(get(c_box)), "master": trim(get(c_master))}
+            if trim(get(c_vover)):
+                item["vendor"] = trim(get(c_vover))   # typed vendor wins over Last/Lowest vendor
             if get(c_qty) is None:
                 uncalculated += 1
             if item["qty"] is None or item["qty"] <= 0:
                 item["reason"] = f"{COLUMNS['qty']} is blank or 0"
             elif not item["vendor"]:
-                item["reason"] = f"no vendor ({COLUMNS[vendor_key]} is blank)"
+                item["reason"] = f"no vendor ({COLUMNS[vendor_key]} is blank; type one in '{COLUMNS['vendor_override']}')"
             if item.get("reason"):
                 skipped.append(item)
             else:
@@ -288,7 +292,7 @@ def main():
         return 1
     try:
         po_date = date.fromisoformat(PO_DATE) if PO_DATE else datetime.now(timezone(timedelta(hours=5))).date()
-        print(f"Reading {source}  (prices and vendors: {PO_PRICE_BASIS.upper()} buying)", flush=True)
+        print(f"Reading {source}  (vendors: {PO_PRICE_BASIS.upper()}, or the typed PO vendor)", flush=True)
         lines, skipped = read_marked_lines(source)
         folder = Path(args.output_folder).expanduser().resolve()
         if SUBFOLDER_BY_DATE:
