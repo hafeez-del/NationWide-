@@ -326,6 +326,7 @@ ALL_ORDERING_COLUMNS = [
     "Last buying price", "Last vendor", "Lowest buying price", "Lowest price vendor",
     "Lowest price date",
     "Status", "Current month avg/day",
+    "PO vendor", "PO price",
 ]
 
 DEFAULT_ORDERING_COLUMNS = [
@@ -333,6 +334,7 @@ DEFAULT_ORDERING_COLUMNS = [
     "Pack of", "QTY", "Incoming QTY", "Suggested order QTY", "Adjustment",
     "Final order QTY", "Priority",
     "Last buying price", "Last vendor", "Lowest buying price", "Lowest price vendor",
+    "PO vendor", "PO price",
 ]
 
 ALL_PRIORITIES = [
