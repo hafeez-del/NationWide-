@@ -11,6 +11,7 @@ import zipfile
 import shutil
 import traceback
 import time
+import hmac
 import threading
 from pathlib import Path
 from contextlib import redirect_stdout, redirect_stderr
@@ -346,6 +347,22 @@ ALL_PRIORITIES = [
 DEFAULT_PRIORITIES = ["Urgent - order", "Order"]
 
 print("APP: constants done", flush=True)
+
+# ─────────────────────── optional password ─────────────────────
+# If the environment variable APP_PASSWORD is set (e.g. on Railway), everybody must enter it first.
+# If it is not set (e.g. Streamlit Cloud), the app opens directly as before.
+_APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
+if _APP_PASSWORD and not st.session_state.get("authed"):
+    st.markdown('<div class="hero-banner"><h1>🔒 Nation Wide Automated Ordering</h1>'
+                '<p>Enter the password to continue.</p></div>', unsafe_allow_html=True)
+    _pw = st.text_input("Password", type="password", key="login_pw")
+    if _pw:
+        if hmac.compare_digest(_pw.encode(), _APP_PASSWORD.encode()):
+            st.session_state["authed"] = True
+            st.rerun()
+        else:
+            st.error("Wrong password.")
+    st.stop()
 
 # ─────────────────────────── UI ───────────────────────────────
 
