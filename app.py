@@ -1029,6 +1029,10 @@ try:
         '<div class="custom-footer">'
         '<span>Nation Wide Wholesale</span> — Automation Tool &nbsp;|&nbsp; '
         'Demand Forecast &bull; PO Generator &bull; PDI Sales Sorter &bull; QB Sales Merger'
+        '<br><br>'
+        'Designed &amp; developed by <span>Abdul Hafeez</span> - Manager (Data &amp; Automation)<br>'
+        'For any queries: <a href="mailto:Hafeez@btcmstores.com" style="color:#4A90D9;text-decoration:none;">'
+        'Hafeez@btcmstores.com</a>'
         '</div>',
         unsafe_allow_html=True,
     )
