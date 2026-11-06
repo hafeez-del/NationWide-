@@ -1,5 +1,4 @@
 import argparse
-import gc
 import math
 import re
 import sys
@@ -23,7 +22,7 @@ from openpyxl.utils import get_column_letter
 
 # ======================= EDIT INPUT / OUTPUT PATHS =======================
 CONFIG = {
-    "inventory": r"E:\Downloads\Automate\nationwise\invenotry.xlsx",
+"inventory": r"E:\Downloads\Automate\nationwise\invenotry.xlsx",
 "purchase": r"E:\Downloads\Automate\nationwise\6 month purchase.xlsx",
 "sales": r"E:\Downloads\Automate\nationwise\6 month sales new.xlsx",
 "pricebook": r"E:\Downloads\Automate\nationwise\master price book.xlsx",
@@ -37,6 +36,7 @@ CONFIG = {
 "history": "",
 "output": r"E:\Downloads\Automate\Warehouse_Monthly_Sales_new_28.xlsx",
 "output_ordering": r"E:\Downloads\Automate\Warehouse_Ordering_Sheet_28.xlsx"
+
 }
 
 STORES_BASE_YEAR = 2026  # Year for month-only PDI rows (change for a new base year)
@@ -78,6 +78,10 @@ ORDERING_BORDERS = True            # thin borders around every cell of the order
 ORDERING_ONLY_ORDER_ROWS = True    # True = the ordering sheet lists only the SKUs whose Priority is in ORDERING_PRIORITIES
 ORDERING_PRIORITIES = ["Urgent - order", "Order"]   # add "Urgent - expedite incoming" etc. if you want them listed too
 ORDERING_SHEET_NAME = "ordering sheet"
+# Also put a copy of these tabs of the main output into the ordering workbook (after the ordering sheet).
+# Set both to False (or remove a name) if you do not want them there. They are plain values, copied as they are.
+ORDERING_INCLUDE_PURCHASE_HISTORY = True
+ORDERING_INCLUDE_OPEN_PO_ALERTS = True
 # ---------------- OPEN PO ALERTS (tab "open PO alerts" in the main output) ----------------
 # Put the PO date in a column of the Open PO sheet (header: PO date / Date / Order date). A line whose PO date is
 # OPEN_PO_ALERT_DAYS or more days before today (blank/None = the lead time of DEMAND) and that is still in the sheet
@@ -887,14 +891,13 @@ def month_sequence(start, end):
     return result
 
 
-def sales_coverage_months(sheet_or_label, sales_rows, history):
+def sales_coverage_months(sheet, sales_rows, history):
     covered = set()
     start, end = SALES_BASE_COVERAGE
     if start and end:
         covered.update(month_sequence(date.fromisoformat(start), date.fromisoformat(end)))
     else:
-        # Accept either a worksheet or a pre-read label string (memory-saving mode).
-        label = sheet_or_label if isinstance(sheet_or_label, str) else trim(sheet_or_label.cell(3, 1).value)
+        label = trim(sheet.cell(3, 1).value)
         match = re.fullmatch(r"([A-Za-z]+)\s*-\s*([A-Za-z]+),?\s+(\d{4})", label)
         if match:
             first = datetime.strptime(match[1], "%B").month
@@ -983,13 +986,6 @@ def store_month(value, default_year, context):
             return date(default_year, datetime.strptime(label, pattern).month, 1)
         except ValueError:
             pass
-    # Free text such as "October Sale 2026." -> find a month name (and a year, if present) inside it.
-    found = re.search(r"\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|"
-                      r"sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b", label, re.I)
-    if found:
-        month_number = datetime.strptime(found.group(1)[:3].title(), "%b").month
-        year = re.search(r"\b(20\d\d)\b", label)
-        return date(int(year.group(1)) if year else default_year, month_number, 1)
     raise ValueError(f"Invalid store Month at {context}: {value!r}")
 
 
@@ -1025,12 +1021,11 @@ def read_store_sales(path, target, raw_prefix, default_year):
             else:
                 named_month = None
             included.append(sheet.title)
-            if INCLUDE_RAW_TABS:
-                name = raw_prefix if len(included) == 1 else raw_prefix[:27] + f" {len(included)}"
-                raw = target.create_sheet(name[:31])
-                # Preserve source values, including optional Retail, without importing formatting.
-                for original in sheet.iter_rows(values_only=True):
-                    raw.append(original)
+            name = raw_prefix if len(included) == 1 else raw_prefix[:27] + f" {len(included)}"
+            raw = target.create_sheet(name[:31])
+            # Preserve source values, including optional Retail, without importing formatting.
+            for original in sheet.iter_rows(values_only=True):
+                raw.append(original)
             for rowno, row in enumerate(sheet.iter_rows(min_row=rn+1, values_only=True), rn+1):
                 def cell(index):
                     return row[index] if index is not None and index < len(row) else None
@@ -1340,7 +1335,7 @@ def format_output_tabs(target):
         final.column_dimensions[get_column_letter(column)].width = FINAL_SALES_COLUMN_WIDTH
 
 
-def build_ordering_workbook(final, planning_cache, path):
+def build_ordering_workbook(final, planning_cache, path, extra_sheets=()):
     """Second workbook: tab 1 = copy of 'final sheet' with its formulas, tab 2 = ordering sheet.
 
     Ordering-sheet cells are formulas that point at tab 1, so editing Incoming QTY, Safety factor, Auto order?
@@ -1446,6 +1441,10 @@ def build_ordering_workbook(final, planning_cache, path):
         orders.add_data_validation(dv)
     orders.auto_filter.ref = f"A1:{get_column_letter(len(specs))}{max(1, len(rows) + 1)}"
     orders.sheet_view.showGridLines = False
+    # Copies of 'purchase history' / 'open PO alerts' from the main output (values only, same look).
+    for extra in extra_sheets:
+        copy_raw(extra, workbook.create_sheet(extra.title))
+        print(f"  Ordering workbook: added tab '{extra.title}' ({extra.max_row:,} rows)", flush=True)
     for ws in workbook:
         ws.freeze_panes = None
         ws.sheet_view.pane = None
@@ -2222,12 +2221,9 @@ def run(paths):
         cached = load_workbook(source_paths[kind], data_only=True, read_only=True)
         try:
             sheet, header_row, cols = find_source(cached, kind)
-            if INCLUDE_RAW_TABS:
-                raw = target.create_sheet(kind + " raw")
-                print(f"  Preserving original sheet: {sheet.title}", flush=True)
-                copy_raw(source[sheet.title], raw)
-            else:
-                raw = None
+            raw = target.create_sheet(kind + " raw")
+            print(f"  Preserving original sheet: {sheet.title}", flush=True)
+            copy_raw(source[sheet.title], raw)
             clean = target.create_sheet(kind + " clean")
             stats = Counter()
             headers, rows = (inventory_rows(sheet, header_row, cols, stats) if kind == "inventory"
@@ -2245,8 +2241,7 @@ def run(paths):
                         a_sheet, a_header, a_cols = find_source(append_cached, kind)
                         append_headers, append_rows = transaction_rows(a_sheet, a_header, a_cols, kind, Counter())
                         coverage = append_date_range(a_sheet, kind, a_cols, append_rows)
-                        if INCLUDE_RAW_TABS:
-                            copy_raw(append_source[a_sheet.title], target.create_sheet(kind + " append raw"))
+                        copy_raw(append_source[a_sheet.title], target.create_sheet(kind + " append raw"))
                         print(f"  Append replaces dates {coverage[0]} through {coverage[1]} ({len(append_rows):,} qualifying rows)", flush=True)
                     finally:
                         append_source.close()
@@ -2257,12 +2252,8 @@ def run(paths):
                 purchase_clean_rows = rows
             if kind == "sales":
                 sales_clean_rows = rows
-                if INCLUDE_RAW_TABS:
-                    # This copied worksheet survives closing the source workbook.
-                    sales_base_sheet = raw
-                else:
-                    # Save just the coverage label text instead of the entire raw sheet.
-                    sales_base_sheet = trim(source[sheet.title].cell(3, 1).value)
+                # This copied worksheet survives closing the source workbook.
+                sales_base_sheet = raw
             if kind == "inventory":
                 inventory_clean_rows = rows
                 # Store real Excel PROPER formulas; cached results added on save.
@@ -2279,7 +2270,6 @@ def run(paths):
         finally:
             source.close()
             cached.close()
-            gc.collect()
     proper_inventory = [[r[0], r[1], proper(r[2]), r[3]] for r in inventory_clean_rows]
     print("\nMapping inventory to Master Price Book...", flush=True)
     mapped, lookup_counts = lookup_inventory(proper_inventory, indexes)
@@ -2389,8 +2379,6 @@ def run(paths):
     sales_summary_checks, _ = reverse_purchase_check(summarized, sales_items, indexes)
     sales_active_checks, _ = reverse_purchase_check(active_rows, sales_items, indexes)
     add_lookup_columns(target["sales clean"], sales_summary_checks, sales_active_checks)
-    del sales_items
-    gc.collect()
     as_of = date.fromisoformat(AS_OF_DATE) if AS_OF_DATE else datetime.now(timezone(timedelta(hours=5))).date()
     covered_months = sales_coverage_months(sales_base_sheet, sales_clean_rows, history)
     sales_headers, monthly_rows, sales_audit = monthly_sales_rows(active_rows, sales_clean_rows, sales_active_checks, covered_months, as_of)
@@ -2406,28 +2394,6 @@ def run(paths):
     print(f"  Inactive: {len(audit_rows) - len(active_rows):,}", flush=True)
     print("\nPreparing store sales and cross checks...", flush=True)
     store_values = add_stores_reports(paths, target, summarized, active_rows, indexes, history, as_of, sales_headers, monthly_rows)
-    # Move the two largest sheets (sales clean, stores sales clean) into a separate write-only workbook NOW,
-    # before the planning / formatting steps, so they are not held in memory (or restyled) any longer.
-    large_sheet_names = [n for n in target.sheetnames if n in ("sales clean", "stores sales clean")]
-    if large_sheet_names:
-        detail_path = output.with_name(output.stem + "_Detail_Sheets.xlsx")
-        print(f"\nStreaming {len(large_sheet_names)} large sheet(s) to detail file...", flush=True)
-        wb_detail = Workbook(write_only=True)
-        for sheet_name in large_sheet_names:
-            ws_src = target[sheet_name]
-            ws_dst = wb_detail.create_sheet(sheet_name)
-            for row in ws_src.iter_rows(values_only=True):
-                ws_dst.append(list(row))
-            del target[sheet_name]
-            del ws_src
-            print(f"  '{sheet_name}' streamed OK", flush=True)
-        gc.collect()
-        wb_detail.save(str(detail_path))
-        wb_detail.close()
-        del wb_detail
-        gc.collect()
-        paths["output_detail"] = str(detail_path)
-        print(f"  Detail sheets saved: {detail_path}", flush=True)
     alert_days = int(OPEN_PO_ALERT_DAYS if OPEN_PO_ALERT_DAYS else DEMAND["lead_time"])
     late_note = late_open_pos(po_rows, po_tab, as_of, alert_days) if po_rows is not None else {}
     for key, qty in po_incoming.items():
@@ -2457,13 +2423,15 @@ def run(paths):
         if ordering_path == output or ordering_path in source_paths.values():
             raise ValueError("Ordering workbook path must differ from the main output and the inputs.")
         print("\nBuilding ordering workbook...", flush=True)
-        build_ordering_workbook(target["final sheet"], planning_cache, ordering_path)
+        extra_sheets = []
+        if ORDERING_INCLUDE_PURCHASE_HISTORY and PURCHASE_HISTORY_SHEET in target.sheetnames:
+            extra_sheets.append(target[PURCHASE_HISTORY_SHEET])
+        if ORDERING_INCLUDE_OPEN_PO_ALERTS and OPEN_PO_SHEET_NAME in target.sheetnames:
+            extra_sheets.append(target[OPEN_PO_SHEET_NAME])
+        elif ORDERING_INCLUDE_OPEN_PO_ALERTS:
+            print("  (no 'open PO alerts' tab was built, so it is not added to the ordering workbook)", flush=True)
+        build_ordering_workbook(target["final sheet"], planning_cache, ordering_path, extra_sheets)
     output.parent.mkdir(parents=True, exist_ok=True)
-    # Free large data structures before saving (the ordering workbook above no longer needs them).
-    del sales_clean_rows, purchase_clean_rows, inventory_clean_rows
-    del active_rows, summarized, audit_rows, proper_inventory, mapped
-    del sales_active_checks, purchase_checks, purchase_active_checks, sales_summary_checks
-    gc.collect()
     # Save atomically so a failed save does not leave a half-written deliverable.
     temporary = output.with_name(output.stem + ".tmp.xlsx")
     print(f"\nSaving: {output}", flush=True)
