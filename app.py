@@ -365,8 +365,8 @@ try:
         placeholder="e.g. Ali",
     )
 
-    tab1, tab2, tab3, tab_qb, tab4 = st.tabs(
-        ["📊 Demand Forecast", "📋 PO Generator", "🏪 PDI Sales Sorter", "🧾 QB Sales Merger", "🗂️ Activity Log"]
+    tab1, tab2, tab3, tab_qb, tab_qp, tab4 = st.tabs(
+        ["📊 Demand Forecast", "📋 PO Generator", "🏪 PDI Sales Sorter", "🧾 QB Sales Merger", "🛒 QB Purchase Merger", "🗂️ Activity Log"]
     )
     print("APP: tabs created", flush=True)
 
@@ -890,6 +890,11 @@ try:
             accept_multiple_files=True,
             key="qb_files",
         )
+        qb_keep = st.number_input(
+            "Keep last N months (0 = keep every month in the files)",
+            min_value=0, max_value=60, value=0, step=1, key="qb_keep",
+            help="6 = keep only the newest 6 calendar months (counted back from the latest transaction date).",
+        )
 
         if qb_uploads:
             st.markdown(
@@ -934,7 +939,7 @@ try:
                     live_box = st.empty()
                     tee_out = TeeWriter(log_buf, sys.__stderr__, live_box)
                     with redirect_stdout(tee_out), redirect_stderr(tee_out):
-                        result = qb.run(sorted(saved), os.path.join(tmp, "out"))
+                        result = qb.run(sorted(saved), os.path.join(tmp, "out"), keep_last_months=int(qb_keep))
                     tee_out.finish(clear=True)
 
                     log_text = log_buf.getvalue()
@@ -948,7 +953,7 @@ try:
                             "skipped": result["skipped"],
                         }
                     log_activity("QB Sales Merger", user_name, "Success", time.time() - _t0, log_text,
-                                 f"{len(saved)} file(s), {result['customers']} customers, {result['rows']} rows")
+                                 f"{len(saved)} file(s), {result['customers']} customers, {result['rows']} rows, keep last {int(qb_keep)}")
 
                 except Exception as e:
                     print(f"APP: ERROR in QB sales merger: {e}", flush=True)
@@ -983,6 +988,123 @@ try:
 
     print("APP: qb tab complete", flush=True)
 
+    # ═══════════════════════ TAB: QB PURCHASE MERGER ═══════════════════════
+    with tab_qp:
+        st.markdown(
+            '<div class="section-card"><h3>🛒 QB Purchase Merger</h3>'
+            'Upload the QuickBooks <strong>Purchases by Vendor Detail</strong> exports (.xlsx), e.g. the old 6-month file '
+            '+ the new month. They are merged into one workbook (same layout as the QB export, so the Demand Forecast '
+            'reads it as the purchase file). If two files cover the same dates, the file exported <strong>later</strong> '
+            'wins and the older rows for those dates are dropped.</div>',
+            unsafe_allow_html=True,
+        )
+
+        qp_uploads = st.file_uploader(
+            "QB Purchase Files (any number of .xlsx files)",
+            type=["xlsx"],
+            accept_multiple_files=True,
+            key="qp_files",
+        )
+        qp_keep = st.number_input(
+            "Keep last N months (0 = keep every month in the files)",
+            min_value=0, max_value=60, value=0, step=1, key="qp_keep",
+            help="6 = keep only the newest 6 calendar months, so the '6 month' file stays 6 months long when you add a new month.",
+        )
+
+        if qp_uploads:
+            st.markdown(
+                f'<div class="metric-row">'
+                f'<span class="metric-chip green">✓ {len(qp_uploads)} file(s) uploaded</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                '<div class="info-callout">📁 Upload at least one QB purchase file to activate the Run button.</div>',
+                unsafe_allow_html=True,
+            )
+
+        st.markdown("")  # spacing
+        if st.button("▶️  Merge Purchase Files", type="primary", disabled=not qp_uploads, key="qp_run"):
+            st.session_state.pop("qp_result", None)
+            with st.spinner("Merging QB purchase files..."):
+                tmp = tempfile.mkdtemp(prefix="nw_qp_")
+                _t0 = time.time()
+                log_buf = None
+                try:
+                    in_dir = os.path.join(tmp, "in")
+                    os.makedirs(in_dir, exist_ok=True)
+                    saved, used = [], set()
+                    for uploaded in qp_uploads:
+                        name = Path(uploaded.name).name
+                        base, ext = os.path.splitext(name)
+                        n = 2
+                        while name.lower() in used:
+                            name = f"{base}_{n}{ext}"
+                            n += 1
+                        used.add(name.lower())
+                        saved.append(save_upload(uploaded, in_dir, name))
+
+                    if "qb_purchase_merger" in sys.modules:
+                        del sys.modules["qb_purchase_merger"]
+                    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+                    import qb_purchase_merger as qp
+
+                    log_buf = io.StringIO()
+                    live_box = st.empty()
+                    tee_out = TeeWriter(log_buf, sys.__stderr__, live_box)
+                    with redirect_stdout(tee_out), redirect_stderr(tee_out):
+                        result = qp.run(sorted(saved), os.path.join(tmp, "out"), keep_last_months=int(qp_keep))
+                    tee_out.finish(clear=True)
+
+                    log_text = log_buf.getvalue()
+                    with open(result["output"], "rb") as f:
+                        st.session_state["qp_result"] = {
+                            "data": f.read(),
+                            "name": os.path.basename(result["output"]),
+                            "log": log_text,
+                            "vendors": result["vendors"],
+                            "rows": result["rows"],
+                            "dropped": result["dropped"],
+                            "skipped": result["skipped"],
+                        }
+                    log_activity("QB Purchase Merger", user_name, "Success", time.time() - _t0, log_text,
+                                 f"{len(saved)} file(s), {result['vendors']} vendors, {result['rows']} rows, keep last {int(qp_keep)}")
+
+                except Exception as e:
+                    print(f"APP: ERROR in QB purchase merger: {e}", flush=True)
+                    print(traceback.format_exc(), flush=True)
+                    log_activity("QB Purchase Merger", user_name, "Failed", time.time() - _t0,
+                                 (log_buf.getvalue() if log_buf else "") + "\n" + traceback.format_exc(), str(e))
+                    st.error(f"❌ Error: {e}")
+                    if log_buf is not None:
+                        with st.expander("Processing log up to the error", expanded=True):
+                            st.code("\n".join(log_buf.getvalue().splitlines()[-60:]), language="text")
+                    with st.expander("Full Error Details"):
+                        st.code(traceback.format_exc(), language="text")
+                finally:
+                    shutil.rmtree(tmp, ignore_errors=True)
+
+        qp_result = st.session_state.get("qp_result")
+        if qp_result:
+            st.success(f"✅ Merged — {qp_result['vendors']} vendors, {qp_result['rows']:,} rows "
+                       f"(older duplicate rows dropped: {qp_result['dropped']:,})")
+            if qp_result["skipped"]:
+                st.warning("Skipped (could not be read): " + ", ".join(qp_result["skipped"]))
+            with st.expander("📋 Processing Log", expanded=False):
+                st.code(qp_result["log"], language="text")
+            st.markdown("##### ⬇️ Download Output")
+            st.download_button(
+                "📥 Download Merged Purchase Workbook",
+                data=qp_result["data"],
+                file_name=qp_result["name"],
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+                key="qp_download",
+            )
+
+    print("APP: qb purchase tab complete", flush=True)
+
     # ═══════════════════════ TAB 5: ACTIVITY LOG ═══════════════════════
     with tab4:
         st.markdown(
@@ -1011,7 +1133,7 @@ try:
     st.markdown(
         '<div class="custom-footer">'
         '<span>Nation Wide Wholesale</span> — Automation Tool &nbsp;|&nbsp; '
-        'Demand Forecast &bull; PO Generator &bull; PDI Sales Sorter &bull; QB Sales Merger'
+        'Demand Forecast &bull; PO Generator &bull; PDI Sales Sorter &bull; QB Sales Merger &bull; QB Purchase Merger'
         '<br><br>'
         'Designed &amp; developed by <span>Abdul Hafeez</span> - Manager (Data &amp; Automation)<br>'
         'For any queries: <a href="mailto:Hafeez@btcmstores.com" style="color:#4A90D9;text-decoration:none;">'
