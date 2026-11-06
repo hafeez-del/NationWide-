@@ -15,6 +15,10 @@ import xlsxwriter
 #  Only used when you run this file directly from the command line (not in Streamlit)
 # ============================================================
 FOLDER_PATH = r"E:\Downloads\Automate\nationwise\New folder"
+# 0 / None = keep every month that is in the files.
+# 6 = keep only the newest 6 calendar months (counted back from the latest transaction date, e.g. files up to
+#     October -> output starts 1 May), so the "6 month" file stays 6 months long when you add a new month.
+KEEP_LAST_MONTHS = None
 # ============================================================
 
 HEADERS = ["Transaction date", "Transaction type", "Num", "Product/Service full name",
@@ -93,12 +97,14 @@ def read_file(path):
     return out, footer
 
 
-def run(files, output_dir):
+def run(files, output_dir, keep_last_months=None):
     """Merge the given QB monthly files (list of paths) into one workbook inside output_dir.
 
     Returns {"output": path, "customers": n, "rows": n, "skipped": [names]}.
     Raises ValueError if nothing could be read.
+    keep_last_months: keep only the newest N calendar months (None -> KEEP_LAST_MONTHS above, 0 = keep all).
     """
+    keep_last_months = KEEP_LAST_MONTHS if keep_last_months is None else keep_last_months
     files = list(files)
     if not files:
         raise ValueError("No .xlsx file given")
@@ -122,6 +128,26 @@ def run(files, output_dir):
         footer = ft or footer
     if not data:
         raise ValueError("No data found - none of the files could be read as a QB 'Sales by Customer Detail' export")
+
+    if keep_last_months and int(keep_last_months) > 0:
+        latest = max(d for v in data.values() for d, _, _ in v)
+        y, m = latest.year, latest.month - (int(keep_last_months) - 1)
+        while m <= 0:
+            m += 12
+            y -= 1
+        cut = datetime(y, m, 1)
+        removed = 0
+        for cust in list(data):
+            kept = [x for x in data[cust] if x[0] >= cut]
+            removed += len(data[cust]) - len(kept)
+            if kept:
+                data[cust] = kept
+            else:
+                del data[cust]
+        total_rows -= removed
+        print(f"KEEP_LAST_MONTHS={keep_last_months}: rows before {cut:%d-%b-%Y} removed ({removed})")
+        if not data:
+            raise ValueError("No transactions left after KEEP_LAST_MONTHS filter")
 
     # period title from actual dates
     dates = [d for v in data.values() for d, _, _ in v]
