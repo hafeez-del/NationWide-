@@ -18,7 +18,8 @@ from datetime import datetime, timezone, timedelta
 
 print("APP: imports done", flush=True)
 
-st.set_page_config(page_title="Nation Wide Automation", page_icon="📦", layout="wide")
+_ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "favicon.png")
+st.set_page_config(page_title="Nation Wide Automation", page_icon=_ICON if os.path.exists(_ICON) else "📦", layout="wide")
 
 print("APP: page_config done", flush=True)
 
