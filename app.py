@@ -391,7 +391,7 @@ try:
             st.markdown("##### Optional Files")
             f_pur_append = st.file_uploader("Current Month Purchase : Purchase by Vendor Detail MTD", type=["xlsx"], key="df_pur_app")
             f_sal_append = st.file_uploader("Current Month Sales : Sales by Customer Detail MTD", type=["xlsx"], key="df_sal_app")
-            f_stores_append = st.file_uploader("Store Sales from Sales Trend MTD", type=["xlsx"], key="df_stores_app")
+            f_stores_append = st.file_uploader("Current Month Stores Sales:Store Sales from Sales Trend MTD", type=["xlsx"], key="df_stores_app")
             f_open_po = st.file_uploader("Open PO's Sheet", type=["xlsx"], key="df_po")
             f_planning = st.file_uploader("Planning Inputs (optional)", type=["xlsx"], key="df_plan")
             f_manual_inactive = st.file_uploader("Manual Inactive List", type=["xlsx"], key="df_manual_inactive",
