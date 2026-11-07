@@ -381,20 +381,20 @@ try:
         col_left, col_right = st.columns(2)
         with col_left:
             st.markdown("##### Required Files")
-            f_inventory = st.file_uploader("Inventory", type=["xlsx"], key="df_inv")
-            f_purchase = st.file_uploader("6 Month Purchase", type=["xlsx"], key="df_pur")
-            f_sales = st.file_uploader("6 Month Sales", type=["xlsx"], key="df_sal")
+            f_inventory = st.file_uploader("Inventory : Physical Inventory worksheet from QB", type=["xlsx"], key="df_inv")
+            f_purchase = st.file_uploader("Six Month Purchase : Purchase by Vendor Detail from QB", type=["xlsx"], key="df_pur")
+            f_sales = st.file_uploader("Six Month Sales : Sales by Customer Detail from QB", type=["xlsx"], key="df_sal")
             f_pricebook = st.file_uploader("Master Price Book", type=["xlsx"], key="df_pb")
-            f_stores = st.file_uploader("6 Months PDI Sales (Stores)", type=["xlsx"], key="df_stores")
+            f_stores = st.file_uploader("Six Month PDI Sales : Store Sales from Sales Trend", type=["xlsx"], key="df_stores")
 
         with col_right:
             st.markdown("##### Optional Files")
-            f_pur_append = st.file_uploader("Current Purchase Warehouse (optional)", type=["xlsx"], key="df_pur_app")
-            f_sal_append = st.file_uploader("Current Sales Warehouse (optional)", type=["xlsx"], key="df_sal_app")
-            f_stores_append = st.file_uploader("Current Stores Sales (optional)", type=["xlsx"], key="df_stores_app")
-            f_open_po = st.file_uploader("Open PO's (optional)", type=["xlsx"], key="df_po")
+            f_pur_append = st.file_uploader("Current Month Purchase : Purchase by Vendor Detail MTD", type=["xlsx"], key="df_pur_app")
+            f_sal_append = st.file_uploader("Current Month Sales : Sales by Customer Detail MTD", type=["xlsx"], key="df_sal_app")
+            f_stores_append = st.file_uploader("Store Sales from Sales Trend MTD", type=["xlsx"], key="df_stores_app")
+            f_open_po = st.file_uploader("Open PO's Sheet", type=["xlsx"], key="df_po")
             f_planning = st.file_uploader("Planning Inputs (optional)", type=["xlsx"], key="df_plan")
-            f_manual_inactive = st.file_uploader("Manual Inactive List (optional)", type=["xlsx"], key="df_manual_inactive",
+            f_manual_inactive = st.file_uploader("Manual Inactive List", type=["xlsx"], key="df_manual_inactive",
                                                  help="SKUs listed here are forced to Inactive even if they have purchases in the window.")
 
         print("APP: tab1 uploaders done", flush=True)
